@@ -9,6 +9,9 @@ abstract class AbstractController implements ControllerInterface
 {
     protected \Swoole\Http\Request $request;
     protected \Swoole\Http\Response $response;
+    /**
+     * @var string[] {key from Rute dynamic params, value from query uri} /api/{version}/customer ['version' => 'string from query uri']
+     */
     protected array $uri_params;
     protected Application $application;
     protected Server $server;
@@ -22,7 +25,7 @@ abstract class AbstractController implements ControllerInterface
 
     public abstract function execute(): \Swoole\Http\Response;
 
-    public function setApplication(Application $application,Server $server)
+    public function setApplication(Application $application, Server $server): void
     {
         $this->application = $application;
         $this->server = $server;
