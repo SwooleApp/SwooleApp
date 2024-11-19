@@ -2,12 +2,12 @@
 
 namespace Sidalex\SwooleApp\Classes\Validators;
 
-use _PHPStan_7961f7ae1\Nette\Neon\Exception;
-
 class ValidatorUriArr
 {
 
     /**
+     * @param array<int, mixed> $url_arr
+     * @return array<int, mixed>
      * @throws \Exception
      */
     public function validate(array $url_arr): array

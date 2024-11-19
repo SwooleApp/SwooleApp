@@ -4,14 +4,21 @@ namespace Sidalex\SwooleApp\Classes\Tasks\Data;
 
 class BasicTaskData implements TaskDataInterface
 {
-    protected string $className='';
+    /**
+     * @var string
+     *
+     */
+    protected string $className = '';
+    /**
+     * @var array<mixed>
+     */
     protected array $storage = [];
 
     /**
      * @param string $className
-     * @param array $storage
+     * @param array<mixed> $storage
      */
-    public function __construct(string $className='', array $storage = [])
+    public function __construct(string $className = '', array $storage = [])
     {
         $this->className = $className;
         $this->storage = $storage;

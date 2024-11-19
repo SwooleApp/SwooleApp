@@ -9,6 +9,9 @@ use Swoole\Http\Server;
 
 class CyclicJobsBuilder
 {
+    /**
+     * @var string[]
+     */
     private array $listClassName = [];
 
     public function __construct(ConfigWrapper $configWrapper)
@@ -16,11 +19,13 @@ class CyclicJobsBuilder
         $listClassName = $configWrapper->getConfigFromKey('CyclicJobs');
         if (!is_null($listClassName) && is_array($listClassName)) {
             $this->initListClassName($listClassName);
-        } elseif (!is_array($listClassName)) {
-            //todo : fatal log write information
         }
     }
 
+    /**
+     * @param string[] $listClassName
+     * @return void
+     */
     private function initListClassName(array $listClassName): void
     {
         foreach ($listClassName as $className) {
@@ -39,14 +44,20 @@ class CyclicJobsBuilder
 
     /**
      * @param Application $application
-     * @return array<CyclicJobsInterface>
+     * @return array<int<0,max>,CyclicJobsInterface>
      */
-    public function buildCyclicJobs(Application $application,  Server $server): array
+    public function buildCyclicJobs(Application $application, Server $server): array
     {
         $cyclicJobs = [];
         foreach ($this->listClassName as $className) {
-            $cyclicJobs[] = new $className($application, $server);
+            $cyclicJob = new $className($application, $server);
+            if ($cyclicJob instanceof CyclicJobsInterface) {
+                $cyclicJobs[] = new $className($application, $server);
+            } else {
+                //todo: add log fatal information
+            }
         }
+        // @phpstan-ignore-next-line
         return $cyclicJobs;
     }
 }

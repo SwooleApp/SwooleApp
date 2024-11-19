@@ -11,6 +11,9 @@ use Sidalex\SwooleApp\Classes\Wrapper\ConfigWrapper;
 
 class RoutesCollectionBuilder
 {
+    /**
+     * @var array<int,string>
+     */
     protected array $classList;
     protected ValidatorUriArr $validatorUriArr;
 
@@ -24,7 +27,8 @@ class RoutesCollectionBuilder
     }
 
     /**
-     * @return array<array> example [
+     * @return array<int,array<mixed>>
+     * example [
      *      [
      * 'route_pattern_list' => ['','api','*','get_resume'], // /api/{all_string_write_in_parameters_fromURI}/get_resume
      * 'parameters_fromURI' => [2 =>'v1'],
@@ -43,6 +47,8 @@ class RoutesCollectionBuilder
     }
 
     /**
+     * @param ConfigWrapper $config
+     * @return array<int,string>
      * @throws \Exception
      */
     private function getControllerClasses(ConfigWrapper $config): array
@@ -57,11 +63,16 @@ class RoutesCollectionBuilder
         return $classList;
     }
 
+    /**
+     * @param array<int,string> $classList
+     * @return array<int,array<mixed>>
+     * @throws \Exception
+     */
     private function getRepositoryItems(array $classList): array
     {
         $repository = [];
         foreach ($classList as $class) {
-            $attributes = $this->getAtributeReflection($class);
+            $attributes = $this->getAttributeReflection($class);
             if (isset($attributes[0])) {
                 if ($attributes[0]->getName() == 'Sidalex\\SwooleApp\\Classes\\Controllers\\Route') {
                     $repositoryItem = $this->generateItemRout($attributes[0], $class);
@@ -73,9 +84,9 @@ class RoutesCollectionBuilder
     }
 
     /**
-     * @param \ReflectionAttribute $attributes
+     * @param \ReflectionAttribute<object> $attributes
      * @param string $class
-     * @return array example  [
+     * @return array<string,mixed> example  [
      *                               'route_pattern_list' =>
      *                                       [
      *                                           0 => '',
@@ -113,14 +124,25 @@ class RoutesCollectionBuilder
         return $repositoryItem;
     }
 
-    public function searchInRoute(\Swoole\Http\Request $request, array $routesCollection)
+    /**
+     * @param \Swoole\Http\Request $request
+     * @param array<mixed> $routesCollection
+     * @return array<mixed>|null
+     */
+    public function searchInRoute(\Swoole\Http\Request $request, array $routesCollection): array|null
     {
         $uri = explode("/", $request->server['request_uri']);
         return $this->findMatchingElement($routesCollection, $uri, $request->getMethod());
 
     }
 
-    protected function findMatchingElement($array1, $array2, $method,)
+    /**
+     * @param array<mixed> $array1
+     * @param array<mixed> $array2
+     * @param string $method
+     * @return array<int,array<mixed>>|null
+     */
+    protected function findMatchingElement(array $array1, array $array2, string $method): array|null
     {
         foreach ($array1 as $element) {
             $routePatternList = $element['route_pattern_list'];
@@ -151,14 +173,21 @@ class RoutesCollectionBuilder
             $UriParamsInjections[$keyInParamsName] = $uri[$keyInUri];
         }
         if (Utilities::classImplementInterface($className, 'Sidalex\SwooleApp\Classes\Controllers\ControllerInterface')) {
+            // @phpstan-ignore-next-line
             return new $className($request, $response, $UriParamsInjections);
         } else {
             return new ErrorController($request, $response);
         }
     }
 
-    private function getAtributeReflection(string $class)
+    /**
+     * @param string $class
+     * @return \ReflectionAttribute<object>[]
+     * @throws \ReflectionException
+     */
+    private function getAttributeReflection(string $class): array
     {
+        // @phpstan-ignore-next-line
         $reflection = new \ReflectionClass($class);
         return $reflection->getAttributes();
     }

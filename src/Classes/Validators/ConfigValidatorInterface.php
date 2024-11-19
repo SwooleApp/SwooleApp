@@ -1,6 +1,6 @@
 <?php
 
-namespace Sidalex\CandidateVacancyEstimationGpt\Classes\Validators;
+namespace Sidalex\SwooleApp\Classes\Validators;
 
 interface ConfigValidatorInterface
 {

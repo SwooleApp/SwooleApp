@@ -3,3 +3,6 @@ cache/*
 config.json
 vendor/*
 composer.lock
+logs
+custom
+.phpunit.cache

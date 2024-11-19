@@ -2,7 +2,8 @@
 
 namespace Sidalex\SwooleApp;
 
-use Sidalex\CandidateVacancyEstimationGpt\Classes\Validators\ConfigValidatorInterface;
+use Sidalex\SwooleApp\Classes\Tasks\Executors\TaskExecutorInterface;
+use Sidalex\SwooleApp\Classes\Validators\ConfigValidatorInterface;
 
 use Sidalex\SwooleApp\Classes\Builder\NotFoundControllerBuilder;
 use Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder;
@@ -20,10 +21,17 @@ use Swoole\Http\Server;
 class Application
 {
     protected ConfigWrapper $config;
+    /**
+     * @var array<mixed>
+     */
     protected array $routesCollection;
 
     protected StateContainerWrapper $stateContainer;
 
+    /**
+     * @param \stdClass $configPath
+     * @param string[] $ConfigValidationList
+     */
     public function __construct(\stdClass $configPath, array $ConfigValidationList = [])
     {
         try {
@@ -48,13 +56,12 @@ class Application
                         $classStateInitiator,
                         'Sidalex\SwooleApp\Classes\Initiation\StateContainerInitiationInterface'
                     )) {
-                        /**
-                         * @var $classStateInitiatorObject StateContainerInitiationInterface
-                         */
                         $classStateInitiatorObject = new $classStateInitiator();
-                        $classStateInitiatorObject->init($this);
-                        $classStateContainer->{$classStateInitiatorObject->getKey()} = $classStateInitiatorObject->getResultInitiation();
-                        unset($classStateInitiatorObject);
+                        if($classStateInitiatorObject instanceof StateContainerInitiationInterface) {
+                            $classStateInitiatorObject->init($this);
+                            $classStateContainer->{$classStateInitiatorObject->getKey()} = $classStateInitiatorObject->getResultInitiation();
+                            unset($classStateInitiatorObject);
+                        }
                     }
                 }
                 $this->stateContainer = new StateContainerWrapper($classStateContainer);
@@ -66,14 +73,14 @@ class Application
     }
 
     /**
-     * @return array
+     * @return array<int, array<mixed>>
      */
     public function getRoutesCollection(): array
     {
         return $this->routesCollection;
     }
 
-    public function execute(\Swoole\Http\Request $request, \Swoole\Http\Response $response, Server $server)
+    public function execute(\Swoole\Http\Request $request, \Swoole\Http\Response $response, Server $server) :void
     {
         $Route_builder = new RoutesCollectionBuilder($this->config);
         $itemRouteCollection = $Route_builder->searchInRoute($request, $this->routesCollection);
@@ -92,16 +99,17 @@ class Application
         return $this->config;
     }
 
-    public function taskExecute(\Swoole\Http\Server $server, $taskId, $reactorId, $data): TaskResulted
+    public function taskExecute(\Swoole\Http\Server $server, int $taskId, int $reactorId, TaskDataInterface $data): TaskResulted
     {
-        if (!($data instanceof TaskDataInterface)) {
-            return new TaskResulted('error data is not a TaskDataInterface', false);
-        }
         $TaskExecutorClassName = $data->getTaskClassName();
         if (Utilities::classImplementInterface($TaskExecutorClassName, 'Sidalex\SwooleApp\Classes\Tasks\Executors\TaskExecutorInterface')) {
             $TaskExecutorClass = new $TaskExecutorClassName($server, $taskId, $reactorId, $data, $this);
-            $result = $TaskExecutorClass->execute();
-            unset($TaskExecutorClass);
+            if ($TaskExecutorClass instanceof TaskExecutorInterface) {
+                $result = $TaskExecutorClass->execute();
+                unset($TaskExecutorClass);
+            } else {
+                return new TaskResulted('error task Executor not implemented TaskExecutorInterface', false);
+            }
         } else {
             return new TaskResulted('error task Executor not implemented TaskExecutorInterface', false);
         }
@@ -117,7 +125,9 @@ class Application
         $builder = new CyclicJobsBuilder($this->config);
         $listCyclicJobs = $builder->buildCyclicJobs($app, $server);
         foreach ($listCyclicJobs as $job)
+            // @phpstan-ignore-next-line
             go(function () use ($app, $job) {
+                // @phpstan-ignore-next-line
                 while (true) {
                     Coroutine::sleep($job->getTimeSleepSecond());
                     $job->runJob();

@@ -7,11 +7,14 @@ use Swoole\Http\Server;
 
 abstract class AbstractCyclicJob implements CyclicJobsInterface
 {
-protected Application $application;
-protected Server $server;
-protected float $timeSleep = 86400;
+    protected Application $application;
+    protected Server $server;
+    protected float $timeSleep = 86400;
+
     public function __construct(Application $application, Server $server)
     {
+        $this->application = $application;
+        $this->server = $server;
     }
 
     public function getTimeSleepSecond(): float
@@ -19,5 +22,5 @@ protected float $timeSleep = 86400;
         return $this->timeSleep;
     }
 
-     abstract public function runJob(): void;
+    abstract public function runJob(): void;
 }

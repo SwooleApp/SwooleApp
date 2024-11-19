@@ -16,7 +16,13 @@ class ErrorResponseBuilder
         $this->response = $response;
     }
 
-    public function errorResponse(string $errorMessage, int $errorCode = 400, $details = null): Response
+    /**
+     * @param string $errorMessage
+     * @param int $errorCode
+     * @param array<mixed>|object|string|int|null $details
+     * @return Response
+     */
+    public function errorResponse(string $errorMessage, int $errorCode = 400, array|object|string|int|null $details = null): Response
     {
         $this->response->setHeader('Content-Type', 'application/json');
         $this->response->setStatusCode($errorCode);

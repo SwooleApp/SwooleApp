@@ -30,6 +30,7 @@ class NotFoundControllerBuilder
         if (!empty($this->config->getConfigFromKey('notFoundController'))) {
             $className = $this->config->getConfigFromKey('notFoundController');
             if (Utilities::classImplementInterface($className, 'Sidalex\SwooleApp\Classes\Controllers\ControllerInterface')) {
+                // @phpstan-ignore-next-line
                 return new $className($this->request, $this->response);
             }
         }

@@ -9,8 +9,8 @@ use Sidalex\SwooleApp\Classes\Tasks\TaskResulted;
 abstract class AbstractTaskExecutor implements TaskExecutorInterface
 {
     protected \Swoole\Http\Server $server;
-    protected $taskId;
-    protected $reactorId;
+    protected int $taskId;
+    protected int $reactorId;
     /**
      * @var mixed[]
      */
@@ -18,7 +18,7 @@ abstract class AbstractTaskExecutor implements TaskExecutorInterface
     protected Application $app;
 
 
-    public function __construct(\Swoole\Http\Server $server, $taskId, $reactorId, TaskDataInterface $data, Application $app)
+    public function __construct(\Swoole\Http\Server $server, int $taskId, int $reactorId, TaskDataInterface $data, Application $app)
     {
         $this->server = $server;
         $this->taskId = $taskId;
