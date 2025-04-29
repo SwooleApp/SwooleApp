@@ -2,6 +2,7 @@
 
 namespace Sidalex\SwooleApp;
 
+use Sidalex\SwooleApp\Classes\CyclicJobs\CyclicJobRunner;
 use Sidalex\SwooleApp\Classes\Tasks\Executors\TaskExecutorInterface;
 use Sidalex\SwooleApp\Classes\Validators\ConfigValidatorInterface;
 
@@ -121,18 +122,10 @@ class Application
 
     public function initCyclicJobs(Server $server): void
     {
-        $app = $this;
         $builder = new CyclicJobsBuilder($this->config);
-        $listCyclicJobs = $builder->buildCyclicJobs($app, $server);
-        foreach ($listCyclicJobs as $job)
-            // @phpstan-ignore-next-line
-            go(function () use ($app, $job) {
-                // @phpstan-ignore-next-line
-                while (true) {
-                    Coroutine::sleep($job->getTimeSleepSecond());
-                    $job->runJob();
-                }
-            });
+        $listCyclicJobs = $builder->buildCyclicJobs($this, $server);
+        $cyclicJobRunner =  new CyclicJobRunner($listCyclicJobs);
+        $cyclicJobRunner->start();
         unset($builder);
         unset($listCyclicJobs);
     }
