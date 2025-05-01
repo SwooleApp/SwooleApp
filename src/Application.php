@@ -100,24 +100,41 @@ class Application
         return $this->config;
     }
 
-    public function taskExecute(\Swoole\Http\Server $server, int $taskId, int $reactorId, TaskDataInterface $data): TaskResulted
-    {
-        $TaskExecutorClassName = $data->getTaskClassName();
-        if (Utilities::classImplementInterface($TaskExecutorClassName, 'Sidalex\SwooleApp\Classes\Tasks\Executors\TaskExecutorInterface')) {
-            $TaskExecutorClass = new $TaskExecutorClassName($server, $taskId, $reactorId, $data, $this);
-            if ($TaskExecutorClass instanceof TaskExecutorInterface) {
-                $result = $TaskExecutorClass->execute();
-                unset($TaskExecutorClass);
-            } else {
-                return new TaskResulted('error task Executor not implemented TaskExecutorInterface', false);
+    public function taskExecute(\Swoole\Http\Server $server, int $taskId, int $reactorId, TaskDataInterface $data): TaskResulted {
+        try {
+            if (empty($data->getTaskClassName())) {
+                throw new \InvalidArgumentException('Task class name is empty');
             }
-        } else {
-            return new TaskResulted('error task Executor not implemented TaskExecutorInterface', false);
+
+            $TaskExecutorClassName = $data->getTaskClassName();
+
+            if (!class_exists($TaskExecutorClassName)) {
+                throw new \RuntimeException("Task executor class {$TaskExecutorClassName} not found");
+            }
+
+            if (!Utilities::classImplementInterface($TaskExecutorClassName, TaskExecutorInterface::class)) {
+                throw new \RuntimeException("Class {$TaskExecutorClassName} must implement TaskExecutorInterface");
+            }
+
+            $taskExecutor = new $TaskExecutorClassName($server, $taskId, $reactorId, $data, $this);
+
+            if (!$taskExecutor instanceof TaskExecutorInterface) {
+                throw new \RuntimeException("Invalid task executor instance");
+            }
+
+            return $taskExecutor->execute();
+
+        } catch (\Throwable $e) {
+            // Логирование ошибки (можно добавить зависимость от PSR-3 LoggerInterface)
+            error_log("Task execution failed: " . $e->getMessage());
+
+            // Возвращаем подробную информацию об ошибке в debug режиме
+            $errorDetails = $this->config->getConfigFromKey('app_debug')
+                ? ['message' => $e->getMessage(), 'trace' => $e->getTraceAsString()]
+                : 'Task execution failed';
+
+            return new TaskResulted($errorDetails, false);
         }
-        if (!($result instanceof TaskResulted)) {
-            return new TaskResulted('error result is not a TaskResulted', false);
-        }
-        return $result;
     }
 
     public function initCyclicJobs(Server $server): void
