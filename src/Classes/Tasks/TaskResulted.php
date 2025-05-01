@@ -21,7 +21,7 @@ class TaskResulted
     public function getResult(): mixed {
         if (!$this->success) {
             throw new TaskException(
-                $this->result === 'Task execution failed'
+                is_string($this->result)
                     ? $this->result
                     : "Task execution failed: " . var_export($this->result, true)
             );
