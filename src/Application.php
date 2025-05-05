@@ -2,6 +2,8 @@
 
 namespace Sidalex\SwooleApp;
 
+use Sidalex\SwooleApp\Classes\Builder\ConfigBuilder;
+use Sidalex\SwooleApp\Classes\Constants\ApplicationConstants;
 use Sidalex\SwooleApp\Classes\CyclicJobs\CyclicJobRunner;
 use Sidalex\SwooleApp\Classes\Tasks\Executors\TaskExecutorInterface;
 use Sidalex\SwooleApp\Classes\Validators\ConfigValidatorInterface;
@@ -33,44 +35,68 @@ class Application
      * @param \stdClass $configPath
      * @param string[] $ConfigValidationList
      */
-    public function __construct(\stdClass $configPath, array $ConfigValidationList = [])
+    public function __construct(
+        ?\stdClass                $baseConfig = null,
+        array                    $configValidators = [],
+        ?ConfigBuilder           $configBuilder = null,
+        ?RoutesCollectionBuilder $routesCollectionBuilder = null,
+    )
     {
         try {
-            foreach ($ConfigValidationList as $configValidationClassName) {
-                $validationClass = new $configValidationClassName;
-                if ($validationClass instanceof ConfigValidatorInterface) {
-                    $validationClass->validate($configPath);
-                } else {
-                    //todo: add logic to logs inition not ConfigValidatorInterface validation class
-                }
+            $loader = $configBuilder ?? new ConfigBuilder($baseConfig);
+            if (!empty($configValidators) && !$loader->validate($configValidators)) {
+                throw new \RuntimeException(
+                    "Configuration validation failed:\n" .
+                    implode("\n", $loader->getErrors())
+                );
             }
-            $this->config = new ConfigWrapper($configPath);
-            $Route_builder = new RoutesCollectionBuilder($this->config);
-            $this->routesCollection = $Route_builder->buildRoutesCollection();
-            if (
-                !empty($this->config->getConfigFromKey('StateContainerInitiation'))
-                && is_array($this->config->getConfigFromKey('StateContainerInitiation'))
-            ) {
-                $classStateContainer = new \stdClass();
-                foreach ($this->config->getConfigFromKey('StateContainerInitiation') as $classStateInitiator) {
-                    if (Utilities::classImplementInterface(
-                        $classStateInitiator,
-                        'Sidalex\SwooleApp\Classes\Initiation\StateContainerInitiationInterface'
-                    )) {
-                        $classStateInitiatorObject = new $classStateInitiator();
-                        if($classStateInitiatorObject instanceof StateContainerInitiationInterface) {
-                            $classStateInitiatorObject->init($this);
-                            $classStateContainer->{$classStateInitiatorObject->getKey()} = $classStateInitiatorObject->getResultInitiation();
-                            unset($classStateInitiatorObject);
-                        }
-                    }
-                }
-                $this->stateContainer = new StateContainerWrapper($classStateContainer);
-            }
+
+            $this->config = new ConfigWrapper($loader->getConfig());
+            $this->initializeRoutes($routesCollectionBuilder);
+            $this->initializeStateContainer();
+
         } catch (\Exception $e) {
-            echo $e->getMessage();
-            exit(1);
+            error_log('Application initialization failed: ' . $e->getMessage());
+            throw $e;
         }
+    }
+
+    /**
+     * @param RoutesCollectionBuilder|null $routesCollectionBuilder
+     * @return void
+     * @throws \ReflectionException
+     */
+    private function initializeRoutes(?RoutesCollectionBuilder $routesCollectionBuilder): void
+    {
+        $routeBuilder = $routesCollectionBuilder ?? new RoutesCollectionBuilder($this->config);
+        $this->routesCollection = $routeBuilder->buildRoutesCollection();
+    }
+
+    /**
+     * @return void
+     */
+    private function initializeStateContainer(): void
+    {
+        $stateContainerInit = $this->config->getConfigFromKey(ApplicationConstants::APP_STATE_CONTAINER_INITIATION_CONFIG_NAME) ?? [];
+        if (empty($stateContainerInit)) {
+            return;
+        }
+
+        $stateContainer = new \stdClass();
+        foreach ($stateContainerInit as $initiatorClass) {
+            if (!Utilities::classImplementInterface($initiatorClass, StateContainerInitiationInterface::class)) {
+                error_log("Skipping invalid state initiator: {$initiatorClass}");
+                continue;
+            }
+
+            $initiator = new $initiatorClass();
+            if ($initiator instanceof StateContainerInitiationInterface) {
+                $initiator->init($this);
+                $stateContainer->{$initiator->getKey()} = $initiator->getResultInitiation();
+            }
+        }
+
+        $this->stateContainer = new StateContainerWrapper($stateContainer);
     }
 
     /**
@@ -81,7 +107,7 @@ class Application
         return $this->routesCollection;
     }
 
-    public function execute(\Swoole\Http\Request $request, \Swoole\Http\Response $response, Server $server) :void
+    public function execute(\Swoole\Http\Request $request, \Swoole\Http\Response $response, Server $server): void
     {
         $Route_builder = new RoutesCollectionBuilder($this->config);
         $itemRouteCollection = $Route_builder->searchInRoute($request, $this->routesCollection);
@@ -100,7 +126,8 @@ class Application
         return $this->config;
     }
 
-    public function taskExecute(\Swoole\Http\Server $server, int $taskId, int $reactorId, TaskDataInterface $data): TaskResulted {
+    public function taskExecute(\Swoole\Http\Server $server, int $taskId, int $reactorId, TaskDataInterface $data): TaskResulted
+    {
         try {
             if (empty($data->getTaskClassName())) {
                 throw new \InvalidArgumentException('Task class name is empty');
@@ -141,7 +168,7 @@ class Application
     {
         $builder = new CyclicJobsBuilder($this->config);
         $listCyclicJobs = $builder->buildCyclicJobs($this, $server);
-        $cyclicJobRunner =  new CyclicJobRunner($listCyclicJobs);
+        $cyclicJobRunner = new CyclicJobRunner($listCyclicJobs);
         $cyclicJobRunner->start();
         unset($builder);
         unset($listCyclicJobs);
