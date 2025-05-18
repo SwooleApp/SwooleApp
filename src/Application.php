@@ -32,8 +32,11 @@ class Application
     protected StateContainerWrapper $stateContainer;
 
     /**
-     * @param \stdClass $configPath
-     * @param string[] $ConfigValidationList
+     * @param \stdClass|null $baseConfig
+     * @param string[] $configValidators
+     * @param ConfigBuilder|null $configBuilder
+     * @param RoutesCollectionBuilder|null $routesCollectionBuilder
+     * @throws \ReflectionException
      */
     public function __construct(
         ?\stdClass                $baseConfig = null,
