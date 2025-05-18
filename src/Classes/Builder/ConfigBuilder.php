@@ -6,11 +6,22 @@ use Sidalex\SwooleApp\Classes\Validators\ConfigValidatorInterface;
 
 class ConfigBuilder {
     protected \stdClass $config;
+    /**
+     * @var string[]
+     */
     protected array $errors = [];
+    /**
+     * @var mixed[]
+     */
     protected array $envVariables;
     protected string $envFilePath;
 
-    public function __construct(\stdClass $baseConfig = null, array $envVariables = null, ?string $envFilePath = null) {
+    /**
+     * @param \stdClass|null $baseConfig
+     * @param mixed[]|null $envVariables
+     * @param string|null $envFilePath
+     */
+    public function __construct(?\stdClass $baseConfig = null, ?array $envVariables = null, ?string $envFilePath = null) {
         $this->envFilePath = $envFilePath ?? getcwd() . '/.env';
         $this->config = $baseConfig ?? new \stdClass();
         $this->envVariables = $envVariables ?? $_ENV;
@@ -21,6 +32,10 @@ class ConfigBuilder {
         return $this->config;
     }
 
+    /**
+     * @param string[] $validators
+     * @return bool
+     */
     public function validate(array $validators): bool {
         foreach ($validators as $validatorClass) {
             try {
@@ -39,6 +54,9 @@ class ConfigBuilder {
         return empty($this->errors);
     }
 
+    /**
+     * @return string[]
+     */
     public function getErrors(): array {
         return $this->errors;
     }
@@ -58,18 +76,25 @@ class ConfigBuilder {
         }
 
         $lines = file($this->envFilePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        foreach ($lines as $line) {
-            if (strpos($line, '=') !== false && !str_starts_with(trim($line), '#')) {
-                list($key, $value) = explode('=', $line, 2);
-                $key = trim($key);
-                if (str_starts_with($key, ApplicationConstants::APP_ENV_PREFIX)) {
-                    $this->envVariables[$key] = $this->parseValue($value);
+        if($lines !== false) {
+            foreach ($lines as $line) {
+                if (strpos($line, '=') !== false && !str_starts_with(trim($line), '#')) {
+                    list($key, $value) = explode('=', $line, 2);
+                    $key = trim($key);
+                    if (str_starts_with($key, ApplicationConstants::APP_ENV_PREFIX)) {
+                        $this->envVariables[$key] = $this->parseValue($value);
+                    }
                 }
             }
         }
     }
 
-    protected function processConfigKey(string $key, $value): void {
+    /**
+     * @param string $key
+     * @param mixed $value
+     * @return void
+     */
+    protected function processConfigKey(string $key, mixed $value): void {
         $path = substr($key, strlen(ApplicationConstants::APP_ENV_PREFIX));
         $parts = explode('__', $path);
         $current = &$this->config;
@@ -86,7 +111,13 @@ class ConfigBuilder {
         }
     }
 
-    protected function setFinalValue(&$current, string $part, $value): void {
+    /**
+     * @param mixed $current
+     * @param string $part
+     * @param mixed $value
+     * @return void
+     */
+    protected function setFinalValue(mixed &$current, string $part, mixed $value): void {
         $parsedValue = $this->parseValue($value);
 
         if (is_numeric($part)) {
@@ -102,7 +133,11 @@ class ConfigBuilder {
         }
     }
 
-    protected function parseValue($value) {
+    /**
+     * @param mixed $value
+     * @return bool|float|int|mixed|string|null
+     */
+    protected function parseValue(mixed $value) {
         if (!is_string($value)) {
             return $value;
         }
