@@ -2,7 +2,6 @@
 
 namespace Sidalex\SwooleApp\Classes\Constants;
 
-use _PHPStan_a2c094651\Nette\PhpGenerator\Constant;
 
 class ApplicationConstants
 {
