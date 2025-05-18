@@ -92,6 +92,10 @@ All blocking operations must be wrapped in TaskExecutorInterface and executed as
 To run the application, you need to create a stdClass with a set of properties (described in more detail below).
 
 The intended use is to initiate configuration data from a json file, see example server.php
+
+
+
+
 ```php
 $config = json_decode(file_get_contents('./config.json'));
 ```
@@ -110,6 +114,54 @@ $config->CyclicJobs =[
 'appNameSpaseMyApp\MySecondCyclicJobsClass',
 'appNameSpaseMyApp\MyThreeCyclicJobsClass',
 ];
+```
+
+
+### .env File Format or environment variables in docker
+
+Variables must start with `SWOOLE_APP_` prefix. Example:
+
+```ini
+SWOOLE_APP_DEBUG=true
+SWOOLE_APP_DB__HOST=localhost
+SWOOLE_APP_DB__PORT=3306
+```
+
+Gets converted to:
+
+```php
+object(stdClass) {
+  ["DEBUG"] => true
+  ["DB"] => object(stdClass) {
+    ["HOST"] => "localhost"
+    ["PORT"] => 3306
+  }
+}
+```
+
+### Configuration Validation
+
+1. Create validator class:
+```php
+use Sidalex\SwooleApp\Classes\Validators\ConfigValidatorInterface;
+
+class DatabaseConfigValidator implements ConfigValidatorInterface
+{
+    public function validate(\stdClass $config): void
+    {
+        if (!isset($config->DB->HOST)) {
+            throw new \RuntimeException("Database host required");
+        }
+    }
+}
+```
+
+2. Validate config:
+```php
+if (!$builder->validate([DatabaseConfigValidator::class])) {
+    $errors = $builder->getErrors();
+    // Handle errors
+}
 ```
 
 notFoundController - a string with the class that handles routes not found by the default flow. This class must implement Sidalex\SwooleApp\Classes\Controllers\ControllerInterface.
@@ -586,6 +638,53 @@ $config->CyclicJobs =[
     'appNameSpaseMyApp\MyThreeCyclicJobsClass',
 ];
 ```
+### Формат .env файла или переменных окружения в docker
+
+Переменные должны начинаться с префикса `SWOOLE_APP_`. Пример:
+
+```ini
+SWOOLE_APP_DEBUG=true
+SWOOLE_APP_DB__HOST=localhost
+SWOOLE_APP_DB__PORT=3306
+```
+
+Преобразуется в структуру:
+
+```php
+object(stdClass) {
+  ["DEBUG"] => true
+  ["DB"] => object(stdClass) {
+    ["HOST"] => "localhost"
+    ["PORT"] => 3306
+  }
+}
+```
+
+### Валидация конфигурации
+
+1. Создайте класс-валидатор:
+```php
+use Sidalex\SwooleApp\Classes\Validators\ConfigValidatorInterface;
+
+class DatabaseConfigValidator implements ConfigValidatorInterface
+{
+    public function validate(\stdClass $config): void
+    {
+        if (!isset($config->DB->HOST)) {
+            throw new \RuntimeException("Требуется хост базы данных");
+        }
+    }
+}
+```
+
+2. Проверка конфигурации:
+```php
+if (!$builder->validate([DatabaseConfigValidator::class])) {
+    $errors = $builder->getErrors();
+    // Обработка ошибок
+}
+```
+
 
 notFoundController - строка класс с классом , который обрабатывает роуты не найденные по стандартному флоу, данный клас должен имплементировать Sidalex\SwooleApp\Classes\Controllers\ControllerInterface 
 
