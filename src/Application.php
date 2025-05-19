@@ -2,6 +2,9 @@
 
 namespace Sidalex\SwooleApp;
 
+use Sidalex\SwooleApp\Classes\Builder\ConfigBuilder;
+use Sidalex\SwooleApp\Classes\Constants\ApplicationConstants;
+use Sidalex\SwooleApp\Classes\CyclicJobs\CyclicJobRunner;
 use Sidalex\SwooleApp\Classes\Tasks\Executors\TaskExecutorInterface;
 use Sidalex\SwooleApp\Classes\Validators\ConfigValidatorInterface;
 
@@ -29,47 +32,74 @@ class Application
     protected StateContainerWrapper $stateContainer;
 
     /**
-     * @param \stdClass $configPath
-     * @param string[] $ConfigValidationList
+     * @param \stdClass|null $baseConfig
+     * @param string[] $configValidators
+     * @param ConfigBuilder|null $configBuilder
+     * @param RoutesCollectionBuilder|null $routesCollectionBuilder
+     * @throws \ReflectionException
      */
-    public function __construct(\stdClass $configPath, array $ConfigValidationList = [])
+    public function __construct(
+        ?\stdClass                $baseConfig = null,
+        array                    $configValidators = [],
+        ?ConfigBuilder           $configBuilder = null,
+        ?RoutesCollectionBuilder $routesCollectionBuilder = null,
+    )
     {
         try {
-            foreach ($ConfigValidationList as $configValidationClassName) {
-                $validationClass = new $configValidationClassName;
-                if ($validationClass instanceof ConfigValidatorInterface) {
-                    $validationClass->validate($configPath);
-                } else {
-                    //todo: add logic to logs inition not ConfigValidatorInterface validation class
-                }
+            $loader = $configBuilder ?? new ConfigBuilder($baseConfig);
+            if (!empty($configValidators) && !$loader->validate($configValidators)) {
+                throw new \RuntimeException(
+                    "Configuration validation failed:\n" .
+                    implode("\n", $loader->getErrors())
+                );
             }
-            $this->config = new ConfigWrapper($configPath);
-            $Route_builder = new RoutesCollectionBuilder($this->config);
-            $this->routesCollection = $Route_builder->buildRoutesCollection();
-            if (
-                !empty($this->config->getConfigFromKey('StateContainerInitiation'))
-                && is_array($this->config->getConfigFromKey('StateContainerInitiation'))
-            ) {
-                $classStateContainer = new \stdClass();
-                foreach ($this->config->getConfigFromKey('StateContainerInitiation') as $classStateInitiator) {
-                    if (Utilities::classImplementInterface(
-                        $classStateInitiator,
-                        'Sidalex\SwooleApp\Classes\Initiation\StateContainerInitiationInterface'
-                    )) {
-                        $classStateInitiatorObject = new $classStateInitiator();
-                        if($classStateInitiatorObject instanceof StateContainerInitiationInterface) {
-                            $classStateInitiatorObject->init($this);
-                            $classStateContainer->{$classStateInitiatorObject->getKey()} = $classStateInitiatorObject->getResultInitiation();
-                            unset($classStateInitiatorObject);
-                        }
-                    }
-                }
-                $this->stateContainer = new StateContainerWrapper($classStateContainer);
-            }
+
+            $this->config = new ConfigWrapper($loader->getConfig());
+            $this->initializeRoutes($routesCollectionBuilder);
+            $this->initializeStateContainer();
+
         } catch (\Exception $e) {
-            echo $e->getMessage();
-            exit(1);
+            error_log('Application initialization failed: ' . $e->getMessage());
+            throw $e;
         }
+    }
+
+    /**
+     * @param RoutesCollectionBuilder|null $routesCollectionBuilder
+     * @return void
+     * @throws \ReflectionException
+     */
+    private function initializeRoutes(?RoutesCollectionBuilder $routesCollectionBuilder): void
+    {
+        $routeBuilder = $routesCollectionBuilder ?? new RoutesCollectionBuilder($this->config);
+        $this->routesCollection = $routeBuilder->buildRoutesCollection();
+    }
+
+    /**
+     * @return void
+     */
+    private function initializeStateContainer(): void
+    {
+        $stateContainerInit = $this->config->getConfigFromKey(ApplicationConstants::APP_STATE_CONTAINER_INITIATION_CONFIG_NAME) ?? [];
+        if (empty($stateContainerInit)) {
+            return;
+        }
+
+        $stateContainer = new \stdClass();
+        foreach ($stateContainerInit as $initiatorClass) {
+            if (!Utilities::classImplementInterface($initiatorClass, StateContainerInitiationInterface::class)) {
+                error_log("Skipping invalid state initiator: {$initiatorClass}");
+                continue;
+            }
+
+            $initiator = new $initiatorClass();
+            if ($initiator instanceof StateContainerInitiationInterface) {
+                $initiator->init($this);
+                $stateContainer->{$initiator->getKey()} = $initiator->getResultInitiation();
+            }
+        }
+
+        $this->stateContainer = new StateContainerWrapper($stateContainer);
     }
 
     /**
@@ -80,7 +110,7 @@ class Application
         return $this->routesCollection;
     }
 
-    public function execute(\Swoole\Http\Request $request, \Swoole\Http\Response $response, Server $server) :void
+    public function execute(\Swoole\Http\Request $request, \Swoole\Http\Response $response, Server $server): void
     {
         $Route_builder = new RoutesCollectionBuilder($this->config);
         $itemRouteCollection = $Route_builder->searchInRoute($request, $this->routesCollection);
@@ -101,38 +131,48 @@ class Application
 
     public function taskExecute(\Swoole\Http\Server $server, int $taskId, int $reactorId, TaskDataInterface $data): TaskResulted
     {
-        $TaskExecutorClassName = $data->getTaskClassName();
-        if (Utilities::classImplementInterface($TaskExecutorClassName, 'Sidalex\SwooleApp\Classes\Tasks\Executors\TaskExecutorInterface')) {
-            $TaskExecutorClass = new $TaskExecutorClassName($server, $taskId, $reactorId, $data, $this);
-            if ($TaskExecutorClass instanceof TaskExecutorInterface) {
-                $result = $TaskExecutorClass->execute();
-                unset($TaskExecutorClass);
-            } else {
-                return new TaskResulted('error task Executor not implemented TaskExecutorInterface', false);
+        try {
+            if (empty($data->getTaskClassName())) {
+                throw new \InvalidArgumentException('Task class name is empty');
             }
-        } else {
-            return new TaskResulted('error task Executor not implemented TaskExecutorInterface', false);
+
+            $TaskExecutorClassName = $data->getTaskClassName();
+
+            if (!class_exists($TaskExecutorClassName)) {
+                throw new \RuntimeException("Task executor class {$TaskExecutorClassName} not found");
+            }
+
+            if (!Utilities::classImplementInterface($TaskExecutorClassName, TaskExecutorInterface::class)) {
+                throw new \RuntimeException("Class {$TaskExecutorClassName} must implement TaskExecutorInterface");
+            }
+
+            $taskExecutor = new $TaskExecutorClassName($server, $taskId, $reactorId, $data, $this);
+
+            if (!$taskExecutor instanceof TaskExecutorInterface) {
+                throw new \RuntimeException("Invalid task executor instance");
+            }
+
+            return $taskExecutor->execute();
+
+        } catch (\Throwable $e) {
+            // Логирование ошибки (можно добавить зависимость от PSR-3 LoggerInterface)
+            error_log("Task execution failed: " . $e->getMessage());
+
+            // Возвращаем подробную информацию об ошибке в debug режиме
+            $errorDetails = $this->config->getConfigFromKey('app_debug')
+                ? ['message' => $e->getMessage(), 'trace' => $e->getTraceAsString()]
+                : 'Task execution failed';
+
+            return new TaskResulted($errorDetails, false);
         }
-        if (!($result instanceof TaskResulted)) {
-            return new TaskResulted('error result is not a TaskResulted', false);
-        }
-        return $result;
     }
 
     public function initCyclicJobs(Server $server): void
     {
-        $app = $this;
         $builder = new CyclicJobsBuilder($this->config);
-        $listCyclicJobs = $builder->buildCyclicJobs($app, $server);
-        foreach ($listCyclicJobs as $job)
-            // @phpstan-ignore-next-line
-            go(function () use ($app, $job) {
-                // @phpstan-ignore-next-line
-                while (true) {
-                    Coroutine::sleep($job->getTimeSleepSecond());
-                    $job->runJob();
-                }
-            });
+        $listCyclicJobs = $builder->buildCyclicJobs($this, $server);
+        $cyclicJobRunner = new CyclicJobRunner($listCyclicJobs);
+        $cyclicJobRunner->start();
         unset($builder);
         unset($listCyclicJobs);
     }

@@ -23,7 +23,10 @@
    1. [Response](#response)
    1. [Request](#request)
 1. [notFoundController](#notfoundcontroller)
-
+1. [State Containers](#state-containers)
+   1. [Creation](#creating-a-state-container)
+   1. [Usage](#accessing-state-containers)
+   1. [Best Practices](#best-practices-state-containers)
 
 ## Install
 
@@ -89,6 +92,10 @@ All blocking operations must be wrapped in TaskExecutorInterface and executed as
 To run the application, you need to create a stdClass with a set of properties (described in more detail below).
 
 The intended use is to initiate configuration data from a json file, see example server.php
+
+
+
+
 ```php
 $config = json_decode(file_get_contents('./config.json'));
 ```
@@ -107,6 +114,54 @@ $config->CyclicJobs =[
 'appNameSpaseMyApp\MySecondCyclicJobsClass',
 'appNameSpaseMyApp\MyThreeCyclicJobsClass',
 ];
+```
+
+
+### .env File Format or environment variables in docker
+
+Variables must start with `SWOOLE_APP_` prefix. Example:
+
+```ini
+SWOOLE_APP_DEBUG=true
+SWOOLE_APP_DB__HOST=localhost
+SWOOLE_APP_DB__PORT=3306
+```
+
+Gets converted to:
+
+```php
+object(stdClass) {
+  ["DEBUG"] => true
+  ["DB"] => object(stdClass) {
+    ["HOST"] => "localhost"
+    ["PORT"] => 3306
+  }
+}
+```
+
+### Configuration Validation
+
+1. Create validator class:
+```php
+use Sidalex\SwooleApp\Classes\Validators\ConfigValidatorInterface;
+
+class DatabaseConfigValidator implements ConfigValidatorInterface
+{
+    public function validate(\stdClass $config): void
+    {
+        if (!isset($config->DB->HOST)) {
+            throw new \RuntimeException("Database host required");
+        }
+    }
+}
+```
+
+2. Validate config:
+```php
+if (!$builder->validate([DatabaseConfigValidator::class])) {
+    $errors = $builder->getErrors();
+    // Handle errors
+}
 ```
 
 notFoundController - a string with the class that handles routes not found by the default flow. This class must implement Sidalex\SwooleApp\Classes\Controllers\ControllerInterface.
@@ -395,6 +450,87 @@ class NotFoundController implements ControllerInterface
 }
 ```
 
+## State Containers
+
+State containers provide a way to manage and share application state across different components. They are initialized during application startup and can be accessed throughout the application lifecycle.
+
+### Creating a State Container
+To create a new state container:
+Create a class that extends AbstractContainerInitiator or implements StateContainerInitiationInterface
+
+Implement the required methods:
+
+init() - Initializes your state
+
+getKey() - Returns the key under which your state will be stored
+
+getResultInitiation() - Returns the initialized state
+
+```php
+<?php
+namespace YourApp\StateContainers;
+
+use Sidalex\SwooleApp\Classes\Initiation\AbstractContainerInitiator;
+use Sidalex\SwooleApp\Application;
+
+class DatabaseConnectionContainer extends AbstractContainerInitiator
+{
+    protected string $key = 'database';
+
+    public function init(Application $app): void
+    {
+        // Initialize your database connection here
+        $config = $app->getConfig()->getContainer('database_config');
+        
+        $this->result = new \PDO(
+            $config['dsn'],
+            $config['username'],
+            $config['password']
+        );
+    }
+}
+```
+JSON config:
+```json
+{
+    "StateContainerInitiation": [
+        "YourApp\\StateContainers\\DatabaseConnectionContainer",
+        "YourApp\\StateContainers\\CacheConnectionContainer"
+    ]
+}
+```
+
+### Accessing State Containers
+State containers can be accessed anywhere you have access to the Application instance:
+
+```php
+// In a controller:
+$db = $this->application->getStateContainer()->getContainer('database');
+
+// In a task executor:
+$db = $this->app->getStateContainer()->getContainer('database');
+
+// In a cyclic job:
+$db = $this->application->getStateContainer()->getContainer('database');
+```
+### Best Practices State Containers
+Initialization: State containers are initialized once during application startup. Make sure all required resources are available at this time.
+
+Thread Safety: Since Swoole runs in a multi-process environment, ensure your state containers are either:
+
+Stateless
+
+Process-isolated
+
+Properly synchronized for shared resources
+
+Resource Management: If your container manages resources like database connections, implement proper cleanup in destructor if needed.
+
+Key Naming: Use descriptive and unique keys for your containers to avoid collisions.
+
+
+
+
 # sidalex/swoole-app фреймворк для работы со swoole
 
 1. [Установка](#установка)
@@ -414,6 +550,10 @@ class NotFoundController implements ControllerInterface
    1. [Response](#response-1)
    1. [Запрос](#запрос)
 1. [notFoundController](#notfoundcontroller-1)
+1. [State Containers](#контейнеры-состояний)
+   - [Создание](#создание-контейнера-состояний)
+   - [Использование](#доступ-к-контейнерам-состояний)
+   - [Примеры](#лучшие-практики-использования-контейнеров-состояний)
 
 ## Установка
 
@@ -498,6 +638,53 @@ $config->CyclicJobs =[
     'appNameSpaseMyApp\MyThreeCyclicJobsClass',
 ];
 ```
+### Формат .env файла или переменных окружения в docker
+
+Переменные должны начинаться с префикса `SWOOLE_APP_`. Пример:
+
+```ini
+SWOOLE_APP_DEBUG=true
+SWOOLE_APP_DB__HOST=localhost
+SWOOLE_APP_DB__PORT=3306
+```
+
+Преобразуется в структуру:
+
+```php
+object(stdClass) {
+  ["DEBUG"] => true
+  ["DB"] => object(stdClass) {
+    ["HOST"] => "localhost"
+    ["PORT"] => 3306
+  }
+}
+```
+
+### Валидация конфигурации
+
+1. Создайте класс-валидатор:
+```php
+use Sidalex\SwooleApp\Classes\Validators\ConfigValidatorInterface;
+
+class DatabaseConfigValidator implements ConfigValidatorInterface
+{
+    public function validate(\stdClass $config): void
+    {
+        if (!isset($config->DB->HOST)) {
+            throw new \RuntimeException("Требуется хост базы данных");
+        }
+    }
+}
+```
+
+2. Проверка конфигурации:
+```php
+if (!$builder->validate([DatabaseConfigValidator::class])) {
+    $errors = $builder->getErrors();
+    // Обработка ошибок
+}
+```
+
 
 notFoundController - строка класс с классом , который обрабатывает роуты не найденные по стандартному флоу, данный клас должен имплементировать Sidalex\SwooleApp\Classes\Controllers\ControllerInterface 
 
@@ -769,3 +956,82 @@ class NotFoundController implements ControllerInterface
     }
 }
 ```
+
+## Контейнеры состояний
+
+Контейнеры состояний предоставляют способ управления и совместного использования состояния приложения между различными компонентами. Они инициализируются во время запуска приложения и могут быть доступны на протяжении всего жизненного цикла приложения.
+
+### Создание контейнера состояний
+Чтобы создать новый контейнер состояний:
+Создайте класс, который расширяет AbstractContainerInitiator или реализует StateContainerInitiationInterface
+
+Реализуйте требуемые методы:
+
+init() — инициализирует ваше состояние
+
+getKey() — возвращает ключ, под которым будет храниться ваше состояние
+
+getResultInitiation() — возвращает инициализированное состояние
+
+```php
+<?php
+namespace YourApp\StateContainers;
+
+use Sidalex\SwooleApp\Classes\Initiation\AbstractContainerInitiator;
+
+use Sidalex\SwooleApp\Application;
+
+class DatabaseConnectionContainer extends AbstractContainerInitiator
+{
+protected string $key = 'database';
+
+public function init(Application $app): void
+{
+// Инициализируйте здесь подключение к базе данных
+$config = $app->getConfig()->getContainer('database_config');
+
+$this->result = new \PDO(
+$config['dsn'],
+$config['username'],
+$config['password']
+);
+}
+}
+```
+Конфигурация JSON:
+```json
+{
+"StateContainerInitiation": [
+"YourApp\\StateContainers\\DatabaseConnectionContainer",
+"YourApp\\StateContainers\\CacheConnectionContainer"
+]
+}
+```
+
+### Доступ к контейнерам состояний
+Доступ к контейнерам состояний возможен из любого места, где у вас есть доступ к экземпляру приложения:
+
+```php
+// В контроллере:
+$db = $this->application->getStateContainer()->getContainer('database');
+
+// В исполнителе задач:
+$db = $this->app->getStateContainer()->getContainer('database');
+
+// В циклическом задании:
+$db = $this->application->getStateContainer()->getContainer('database');
+```
+### Лучшие практики использования Контейнеров состояний
+Инициализация: Контейнеры состояний инициализируются один раз во время запуска приложения. Убедитесь, что все необходимые ресурсы доступны в это время.
+
+Безопасность потоков: Поскольку Swoole работает в многопроцессорной среде, убедитесь, что ваши контейнеры состояний:
+
+Без сохранения состояния
+
+Изолированы от процессов
+
+Правильно синхронизированы для общих ресурсов
+
+Управление ресурсами: Если ваш контейнер управляет ресурсами, такими как подключения к базе данных, при необходимости реализуйте надлежащую очистку в деструкторе.
+
+Именование ключей: Используйте описательные и уникальные ключи для ваших контейнеров, чтобы избежать конфликтов.
