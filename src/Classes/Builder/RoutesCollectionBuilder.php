@@ -5,6 +5,7 @@ namespace Sidalex\SwooleApp\Classes\Builder;
 use HaydenPierce\ClassFinder\ClassFinder;
 use Sidalex\SwooleApp\Classes\Controllers\ControllerInterface;
 use Sidalex\SwooleApp\Classes\Controllers\ErrorController;
+use Sidalex\SwooleApp\Classes\Controllers\Route;
 use Sidalex\SwooleApp\Classes\Utils\Utilities;
 use Sidalex\SwooleApp\Classes\Validators\ValidatorUriArr;
 use Sidalex\SwooleApp\Classes\Wrapper\ConfigWrapper;
@@ -15,6 +16,7 @@ class RoutesCollectionBuilder
      * @var array<int,string>
      */
     protected array $classList;
+    protected ConfigWrapper $config;
     protected ValidatorUriArr $validatorUriArr;
 
     /**
@@ -22,11 +24,12 @@ class RoutesCollectionBuilder
      */
     public function __construct(ConfigWrapper $config)
     {
-        $this->classList = $this->getControllerClasses($config);
+        $this->config = $config;
         $this->validatorUriArr = new ValidatorUriArr();
     }
 
     /**
+     * @param string[]|null $controllerClassesList
      * @return array<int,array<mixed>>
      * example [
      *      [
@@ -39,11 +42,12 @@ class RoutesCollectionBuilder
      * @throws \Exception
      * @throws \ReflectionException
      */
-    public function buildRoutesCollection(): array
+    public function buildRoutesCollection(?array $controllerClassesList=null): array
     {
-        $repository = $this->getRepositoryItems($this->classList);
-
-        return $repository;
+        if(is_null($controllerClassesList)){
+            $controllerClassesList = $this->getControllerClasses($this->config);
+        }
+        return $this->getRepositoryItems($controllerClassesList);
     }
 
     /**
@@ -74,7 +78,7 @@ class RoutesCollectionBuilder
         foreach ($classList as $class) {
             $attributes = $this->getAttributeReflection($class);
             if (isset($attributes[0])) {
-                if ($attributes[0]->getName() == 'Sidalex\\SwooleApp\\Classes\\Controllers\\Route') {
+                if ($attributes[0]->getName() == Route::class) {
                     $repositoryItem = $this->generateItemRout($attributes[0], $class);
                     $repository[] = $repositoryItem;
                 }
@@ -172,7 +176,7 @@ class RoutesCollectionBuilder
         foreach ($itemRouteCollection['parameters_fromURI'] as $keyInUri => $keyInParamsName) {
             $UriParamsInjections[$keyInParamsName] = $uri[$keyInUri];
         }
-        if (Utilities::classImplementInterface($className, 'Sidalex\SwooleApp\Classes\Controllers\ControllerInterface')) {
+        if (Utilities::classImplementInterface($className, ControllerInterface::class)) {
             // @phpstan-ignore-next-line
             return new $className($request, $response, $UriParamsInjections);
         } else {
