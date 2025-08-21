@@ -18,7 +18,8 @@
         "yurunsoft/guzzle-swoole": "^2.2",
         "haydenpierce/class-finder": "^0.5.3",
         "oittaa/uuid": "^1.9",
-        "psr/log": "^3.0"
+        "psr/log": "^3.0",
+        "php-di/php-di": "^7.1"
     },
     "config": {
         "allow-plugins": {
