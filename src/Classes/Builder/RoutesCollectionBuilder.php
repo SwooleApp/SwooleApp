@@ -1,8 +1,10 @@
 <?php
 
+
 namespace Sidalex\SwooleApp\Classes\Builder;
 
 use HaydenPierce\ClassFinder\ClassFinder;
+use Sidalex\SwooleApp\Application;
 use Sidalex\SwooleApp\Classes\Controllers\ControllerInterface;
 use Sidalex\SwooleApp\Classes\Controllers\ErrorController;
 use Sidalex\SwooleApp\Classes\Controllers\Route;
@@ -13,18 +15,15 @@ use Sidalex\SwooleApp\Classes\Wrapper\ConfigWrapper;
 class RoutesCollectionBuilder
 {
     /**
-     * @var array<int,string>
+     * @var string[]
      */
     protected array $classList;
-    protected ConfigWrapper $config;
+    protected Application $application;
     protected ValidatorUriArr $validatorUriArr;
 
-    /**
-     * @throws \Exception
-     */
-    public function __construct(ConfigWrapper $config)
+    public function __construct(Application $application)
     {
-        $this->config = $config;
+        $this->application = $application;
         $this->validatorUriArr = new ValidatorUriArr();
     }
 
@@ -42,10 +41,10 @@ class RoutesCollectionBuilder
      * @throws \Exception
      * @throws \ReflectionException
      */
-    public function buildRoutesCollection(?array $controllerClassesList=null): array
+    public function buildRoutesCollection(?array $controllerClassesList = null): array
     {
-        if(is_null($controllerClassesList)){
-            $controllerClassesList = $this->getControllerClasses($this->config);
+        if (is_null($controllerClassesList)) {
+            $controllerClassesList = $this->getControllerClasses($this->application->getConfig());
         }
         return $this->getRepositoryItems($controllerClassesList);
     }
@@ -63,7 +62,6 @@ class RoutesCollectionBuilder
             $classes = ClassFinder::getClassesInNamespace($controller, ClassFinder::RECURSIVE_MODE);
             $classList = array_merge($classList, $classes);
         }
-
         return $classList;
     }
 
@@ -86,7 +84,6 @@ class RoutesCollectionBuilder
         }
         return $repository;
     }
-
     /**
      * @param \ReflectionAttribute<object> $attributes
      * @param string $class
@@ -137,7 +134,6 @@ class RoutesCollectionBuilder
     {
         $uri = explode("/", $request->server['request_uri']);
         return $this->findMatchingElement($routesCollection, $uri, $request->getMethod());
-
     }
 
     /**
@@ -155,8 +151,7 @@ class RoutesCollectionBuilder
             }
             $match = true;
             for ($i = 0; $i < count($routePatternList); $i++) {
-                if ($routePatternList[$i] !== '*'
-                    && $routePatternList[$i] !== $array2[$i]) {
+                if ($routePatternList[$i] !== '*' && $routePatternList[$i] !== $array2[$i]) {
                     $match = false;
                     break;
                 }
@@ -176,9 +171,16 @@ class RoutesCollectionBuilder
         foreach ($itemRouteCollection['parameters_fromURI'] as $keyInUri => $keyInParamsName) {
             $UriParamsInjections[$keyInParamsName] = $uri[$keyInUri];
         }
+
         if (Utilities::classImplementInterface($className, ControllerInterface::class)) {
-            // @phpstan-ignore-next-line
-            return new $className($request, $response, $UriParamsInjections);
+            // Use DI container to create controller with dependencies
+            $container = $this->application->getDIContainer();
+
+            return $container->make($className, [
+                'request' => $request,
+                'response' => $response,
+                'uri_params' => $UriParamsInjections
+            ]);
         } else {
             return new ErrorController($request, $response);
         }

@@ -104,7 +104,7 @@ class Application
      */
     private function initializeRoutes(?RoutesCollectionBuilder $routesCollectionBuilder): void
     {
-        $routeBuilder = $routesCollectionBuilder ?? new RoutesCollectionBuilder($this->config);
+        $routeBuilder = $routesCollectionBuilder ?? new RoutesCollectionBuilder($this);
         $this->routesCollection = $routeBuilder->buildRoutesCollection();
     }
 
@@ -145,7 +145,7 @@ class Application
 
     public function execute(\Swoole\Http\Request $request, \Swoole\Http\Response $response, Server $server): void
     {
-        $Route_builder = new RoutesCollectionBuilder($this->config);
+        $Route_builder = new RoutesCollectionBuilder($this);
         $itemRouteCollection = $Route_builder->searchInRoute($request, $this->routesCollection);
         if (empty($itemRouteCollection)) {
             $controller = (new NotFoundControllerBuilder($request, $response, $this->config))->build();
