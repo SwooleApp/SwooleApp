@@ -1,6 +1,7 @@
 <?php
 namespace tests;
 
+use DI\Container;
 use PHPUnit\Framework\TestCase;
 use Sidalex\SwooleApp\Application;
 use Sidalex\SwooleApp\Classes\Tasks\Data\BasicTaskData;
@@ -8,14 +9,16 @@ use Sidalex\SwooleApp\Classes\Tasks\TaskResulted;
 use Swoole\Http\Server;
 
 /**
- * @covers \Sidalex\SwooleApp\Application
+ * @covers \Sidalex\SwooleApp\Application::taskExecute
  * @covers \Sidalex\SwooleApp\Classes\Tasks\TaskResulted
+ * @covers \Sidalex\SwooleApp\Classes\Tasks\Data\BasicTaskData
  */
 class ApplicationTaskExecuteTest extends TestCase
 {
     private Application $app;
     private Server $serverMock;
     private \stdClass $config;
+    private Container $containerMock;
 
     protected function setUp(): void
     {
@@ -23,17 +26,24 @@ class ApplicationTaskExecuteTest extends TestCase
 
         $this->config = new \stdClass();
         $this->config->app_debug = true;
-        $this->config->controllers = []; // Добавляем пустой массив controllers
+        $this->config->controllers = [];
+
+        $this->containerMock = $this->createMock(Container::class);
+
+        // Create real Application instance but mock the DI container
         $this->app = new Application($this->config);
+
+        // Use reflection to inject the mocked container
+        $reflection = new \ReflectionClass($this->app);
+        $property = $reflection->getProperty('diContainer');
+        $property->setAccessible(true);
+        $property->setValue($this->app, $this->containerMock);
+
         $this->serverMock = $this->createMock(Server::class);
     }
 
     /**
-     * @test
-     * Test checks successful task execution when:
-     * - Executor class exists
-     * - Class implements TaskExecutorInterface
-     * - Task returns valid TaskResulted
+     * @covers \Sidalex\SwooleApp\Application::taskExecute
      */
     public function testSuccessfulTaskExecution(): void
     {
@@ -41,6 +51,25 @@ class ApplicationTaskExecuteTest extends TestCase
             SuccessfulTestExecutor::class,
             ['test' => 'data']
         );
+
+        $mockExecutor = $this->createMock(SuccessfulTestExecutor::class);
+        $mockExecutor->expects($this->once())
+            ->method('execute')
+            ->willReturn(new TaskResulted('success'));
+
+        $this->containerMock->expects($this->once())
+            ->method('make')
+            ->with(
+                SuccessfulTestExecutor::class,
+                [
+                    'server' => $this->serverMock,
+                    'taskId' => 1,
+                    'reactorId' => 1,
+                    'data' => $taskData,
+                    'app' => $this->app
+                ]
+            )
+            ->willReturn($mockExecutor);
 
         $result = $this->app->taskExecute(
             $this->serverMock,
@@ -54,9 +83,7 @@ class ApplicationTaskExecuteTest extends TestCase
     }
 
     /**
-     * @test
-     * Test checks handling of non-existent executor class.
-     * Expected to fail with appropriate error message.
+     * @covers \Sidalex\SwooleApp\Application::taskExecute
      */
     public function testNonExistentExecutorClass(): void
     {
@@ -64,6 +91,9 @@ class ApplicationTaskExecuteTest extends TestCase
             'NonExistentClass',
             ['test' => 'data']
         );
+
+        $this->containerMock->expects($this->never())
+            ->method('make');
 
         $result = $this->app->taskExecute(
             $this->serverMock,
@@ -78,9 +108,7 @@ class ApplicationTaskExecuteTest extends TestCase
     }
 
     /**
-     * @test
-     * Test checks handling of class that exists but doesn't implement
-     * required TaskExecutorInterface. Expected to fail with interface error.
+     * @covers \Sidalex\SwooleApp\Application::taskExecute
      */
     public function testClassWithoutInterface(): void
     {
@@ -88,6 +116,9 @@ class ApplicationTaskExecuteTest extends TestCase
             InvalidTestExecutor::class,
             ['test' => 'data']
         );
+
+        $this->containerMock->expects($this->never())
+            ->method('make');
 
         $result = $this->app->taskExecute(
             $this->serverMock,
@@ -102,13 +133,14 @@ class ApplicationTaskExecuteTest extends TestCase
     }
 
     /**
-     * @test
-     * Test checks handling of empty task class name.
-     * Expected to fail with "empty class name" error.
+     * @covers \Sidalex\SwooleApp\Application::taskExecute
      */
     public function testEmptyTaskClassName(): void
     {
         $taskData = new BasicTaskData('', ['test' => 'data']);
+
+        $this->containerMock->expects($this->never())
+            ->method('make');
 
         $result = $this->app->taskExecute(
             $this->serverMock,
@@ -123,9 +155,7 @@ class ApplicationTaskExecuteTest extends TestCase
     }
 
     /**
-     * @test
-     * Test checks error handling in production mode (app_debug = false).
-     * Expected generic error message without details.
+     * @covers \Sidalex\SwooleApp\Application::taskExecute
      */
     public function testProductionModeErrorHandling(): void
     {
@@ -134,6 +164,9 @@ class ApplicationTaskExecuteTest extends TestCase
             'NonExistentClass',
             ['test' => 'data']
         );
+
+        $this->containerMock->expects($this->never())
+            ->method('make');
 
         $result = $this->app->taskExecute(
             $this->serverMock,
@@ -145,6 +178,45 @@ class ApplicationTaskExecuteTest extends TestCase
         $this->assertFalse($result->isSuccess());
         $this->expectException(\Sidalex\SwooleApp\Classes\Tasks\TaskException::class);
         $this->assertEquals('Task execution failed', $result->getResult());
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Application::taskExecute
+     */
+    public function testTaskExecutorCreatedWithDIContainer(): void
+    {
+        $taskData = new BasicTaskData(
+            SuccessfulTestExecutor::class,
+            ['test' => 'data']
+        );
+
+        $mockExecutor = $this->createMock(SuccessfulTestExecutor::class);
+        $mockExecutor->expects($this->once())
+            ->method('execute')
+            ->willReturn(new TaskResulted('success'));
+
+        $this->containerMock->expects($this->once())
+            ->method('make')
+            ->with(
+                SuccessfulTestExecutor::class,
+                [
+                    'server' => $this->serverMock,
+                    'taskId' => 1,
+                    'reactorId' => 1,
+                    'data' => $taskData,
+                    'app' => $this->app
+                ]
+            )
+            ->willReturn($mockExecutor);
+
+        $result = $this->app->taskExecute(
+            $this->serverMock,
+            1,
+            1,
+            $taskData
+        );
+
+        $this->assertTrue($result->isSuccess());
     }
 }
 

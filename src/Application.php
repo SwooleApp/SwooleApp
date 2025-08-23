@@ -175,7 +175,13 @@ class Application
                 throw new \RuntimeException("Class {$TaskExecutorClassName} must implement TaskExecutorInterface");
             }
 
-            $taskExecutor = new $TaskExecutorClassName($server, $taskId, $reactorId, $data, $this);
+            $taskExecutor = $this->diContainer->make($TaskExecutorClassName, [
+                'server' => $server,
+                'taskId' => $taskId,
+                'reactorId' => $reactorId,
+                'data' => $data,
+                'app' => $this
+            ]);
 
             if (!$taskExecutor instanceof TaskExecutorInterface) {
                 throw new \RuntimeException("Invalid task executor instance");
@@ -184,14 +190,11 @@ class Application
             return $taskExecutor->execute();
 
         } catch (\Throwable $e) {
-            // Логирование ошибки (можно добавить зависимость от PSR-3 LoggerInterface)
             error_log("Task execution failed: " . $e->getMessage());
-
-            // Возвращаем подробную информацию об ошибке в debug режиме
-            $errorDetails = $this->config->getConfigFromKey('app_debug')
-                ? ['message' => $e->getMessage(), 'trace' => $e->getTraceAsString()]
-                : 'Task execution failed';
-
+            $errorDetails = $this->config->getConfigFromKey('app_debug') ? [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ] : 'Task execution failed';
             return new TaskResulted($errorDetails, false);
         }
     }
