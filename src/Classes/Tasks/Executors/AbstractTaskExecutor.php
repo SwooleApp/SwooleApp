@@ -12,13 +12,18 @@ abstract class AbstractTaskExecutor implements TaskExecutorInterface
     protected int $taskId;
     protected int $reactorId;
     /**
-     * @var mixed[]
+     * @var array|mixed[]
      */
     protected array $dataStorage;
     protected Application $app;
 
-
-    public function __construct(\Swoole\Http\Server $server, int $taskId, int $reactorId, TaskDataInterface $data, Application $app)
+    public function __construct(
+        \Swoole\Http\Server $server,
+        int                 $taskId,
+        int                 $reactorId,
+        TaskDataInterface   $data,
+        Application         $app
+    )
     {
         $this->server = $server;
         $this->taskId = $taskId;

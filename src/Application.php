@@ -2,12 +2,13 @@
 
 namespace Sidalex\SwooleApp;
 
+use DI\Container;
 use Sidalex\SwooleApp\Classes\Builder\ConfigBuilder;
+use Sidalex\SwooleApp\Classes\Builder\DIContainerBuilder;
 use Sidalex\SwooleApp\Classes\Constants\ApplicationConstants;
 use Sidalex\SwooleApp\Classes\CyclicJobs\CyclicJobRunner;
 use Sidalex\SwooleApp\Classes\Tasks\Executors\TaskExecutorInterface;
 use Sidalex\SwooleApp\Classes\Validators\ConfigValidatorInterface;
-
 use Sidalex\SwooleApp\Classes\Builder\NotFoundControllerBuilder;
 use Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder;
 use Sidalex\SwooleApp\Classes\CyclicJobs\CyclicJobsBuilder;
@@ -20,48 +21,80 @@ use Sidalex\SwooleApp\Classes\Wrapper\StateContainerWrapper;
 use Swoole\Coroutine;
 use Swoole\Http\Server;
 
-
 class Application
 {
     protected ConfigWrapper $config;
     /**
-     * @var array<mixed>
+     * @var array<mixed> example:
+     *
+     *     [
+     *           [
+     *              'route_pattern_list' => [
+     *                  0 => '',
+     *                  1 => 'api',
+     *                  2 => 'v1',
+     *                  3 => 'users'
+     *              ],
+     *          'parameters_fromURI' => [],
+     *          'method' => 'GET',
+     *          'ControllerClass' => 'App\Controller\UserController'
+     *          ],
+     *      ];
+     *
      */
     protected array $routesCollection;
-
     protected StateContainerWrapper $stateContainer;
+    protected Container $diContainer;
 
     /**
      * @param \stdClass|null $baseConfig
      * @param string[] $configValidators
      * @param ConfigBuilder|null $configBuilder
      * @param RoutesCollectionBuilder|null $routesCollectionBuilder
+     * @param DIContainerBuilder|null $diContainerBuilder
      * @throws \ReflectionException
      */
     public function __construct(
-        ?\stdClass                $baseConfig = null,
+        ?\stdClass               $baseConfig = null,
         array                    $configValidators = [],
         ?ConfigBuilder           $configBuilder = null,
         ?RoutesCollectionBuilder $routesCollectionBuilder = null,
+        ?DIContainerBuilder      $diContainerBuilder = null
     )
     {
         try {
             $loader = $configBuilder ?? new ConfigBuilder($baseConfig);
             if (!empty($configValidators) && !$loader->validate($configValidators)) {
                 throw new \RuntimeException(
-                    "Configuration validation failed:\n" .
-                    implode("\n", $loader->getErrors())
+                    "Configuration validation failed:\n" . implode("\n", $loader->getErrors())
                 );
             }
-
             $this->config = new ConfigWrapper($loader->getConfig());
+
+            // Initialize DI container
+            $diBuilder = $diContainerBuilder ?? new DIContainerBuilder($this->config);
+            $this->diContainer = $diBuilder->build();
+
+            // Register Application and ConfigWrapper in container
+            $this->diContainer->set(Application::class, $this);
+            $this->diContainer->set(ConfigWrapper::class, $this->config);
+
             $this->initializeRoutes($routesCollectionBuilder);
             $this->initializeStateContainer();
-
         } catch (\Exception $e) {
             error_log('Application initialization failed: ' . $e->getMessage());
             throw $e;
         }
+    }
+
+    public function getDIContainer(): Container
+    {
+        return $this->diContainer;
+    }
+
+    public function getConfig(): ConfigWrapper
+    {
+        return $this->config;
     }
 
     /**
@@ -71,7 +104,7 @@ class Application
      */
     private function initializeRoutes(?RoutesCollectionBuilder $routesCollectionBuilder): void
     {
-        $routeBuilder = $routesCollectionBuilder ?? new RoutesCollectionBuilder($this->config);
+        $routeBuilder = $routesCollectionBuilder ?? new RoutesCollectionBuilder($this);
         $this->routesCollection = $routeBuilder->buildRoutesCollection();
     }
 
@@ -112,7 +145,7 @@ class Application
 
     public function execute(\Swoole\Http\Request $request, \Swoole\Http\Response $response, Server $server): void
     {
-        $Route_builder = new RoutesCollectionBuilder($this->config);
+        $Route_builder = new RoutesCollectionBuilder($this);
         $itemRouteCollection = $Route_builder->searchInRoute($request, $this->routesCollection);
         if (empty($itemRouteCollection)) {
             $controller = (new NotFoundControllerBuilder($request, $response, $this->config))->build();
@@ -124,10 +157,6 @@ class Application
         unset($controller);
     }
 
-    public function getConfig(): ConfigWrapper
-    {
-        return $this->config;
-    }
 
     public function taskExecute(\Swoole\Http\Server $server, int $taskId, int $reactorId, TaskDataInterface $data): TaskResulted
     {
@@ -146,7 +175,13 @@ class Application
                 throw new \RuntimeException("Class {$TaskExecutorClassName} must implement TaskExecutorInterface");
             }
 
-            $taskExecutor = new $TaskExecutorClassName($server, $taskId, $reactorId, $data, $this);
+            $taskExecutor = $this->diContainer->make($TaskExecutorClassName, [
+                'server' => $server,
+                'taskId' => $taskId,
+                'reactorId' => $reactorId,
+                'data' => $data,
+                'app' => $this
+            ]);
 
             if (!$taskExecutor instanceof TaskExecutorInterface) {
                 throw new \RuntimeException("Invalid task executor instance");
@@ -155,14 +190,11 @@ class Application
             return $taskExecutor->execute();
 
         } catch (\Throwable $e) {
-            // Логирование ошибки (можно добавить зависимость от PSR-3 LoggerInterface)
             error_log("Task execution failed: " . $e->getMessage());
-
-            // Возвращаем подробную информацию об ошибке в debug режиме
-            $errorDetails = $this->config->getConfigFromKey('app_debug')
-                ? ['message' => $e->getMessage(), 'trace' => $e->getTraceAsString()]
-                : 'Task execution failed';
-
+            $errorDetails = $this->config->getConfigFromKey('app_debug') ? [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ] : 'Task execution failed';
             return new TaskResulted($errorDetails, false);
         }
     }
