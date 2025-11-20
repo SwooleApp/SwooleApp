@@ -4,32 +4,31 @@ namespace tests\Classes\Builder;
 use PHPUnit\Framework\TestCase;
 use Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder;
 use Sidalex\SwooleApp\Classes\Wrapper\ConfigWrapper;
-use Sidalex\SwooleApp\Classes\Controllers\AbstractController;
-use Sidalex\SwooleApp\Classes\Controllers\Route;
-use Sidalex\SwooleApp\Classes\Middleware\Middleware;
-use Sidalex\SwooleApp\Classes\Middleware\MiddlewareInterface;
-use Swoole\Http\Request;
-use Swoole\Http\Response;
 
 /**
  * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder
+ * @covers \Sidalex\SwooleApp\Classes\Middleware\Middleware
  */
 class RoutesCollectionBuilderMiddlewareTest extends TestCase
 {
     /**
      * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::buildRoutesCollection
+     * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::getRepositoryItems
      * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::extractMiddlewares
+     * Тест проверяет сборку маршрутов для контроллера без middleware
      */
-    public function testBuildRoutesCollectionWithControllerWithoutMiddlewares()
+    public function testBuildRoutesCollectionWithControllerWithoutMiddlewares(): void
     {
         $configWrapper = $this->getConfigWrapperMock();
         $builder = new RoutesCollectionBuilder($configWrapper);
 
-        $builder = $this->injectClassList($builder, [TestControllerWithoutMiddlewares::class]);
+        $controllerClasses = [
+            'tests\TestData\TestControllers\TestControllerWithoutMiddlewares'
+        ];
 
-        $routes = $builder->buildRoutesCollection();
+        $routes = $builder->buildRoutesCollection($controllerClasses);
 
-        $this->assertCount(1, $routes);
+        $this->assertCount(1, $routes, 'No routes found for controller without middlewares');
         $this->assertArrayHasKey('middlewares', $routes[0]);
         $this->assertIsArray($routes[0]['middlewares']);
         $this->assertEmpty($routes[0]['middlewares']);
@@ -37,92 +36,100 @@ class RoutesCollectionBuilderMiddlewareTest extends TestCase
 
     /**
      * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::buildRoutesCollection
+     * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::getRepositoryItems
      * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::extractMiddlewares
+     * Тест проверяет сборку маршрутов для контроллера с одним middleware
      */
-    public function testBuildRoutesCollectionWithControllerWithSingleMiddleware()
+    public function testBuildRoutesCollectionWithControllerWithSingleMiddleware(): void
     {
         $configWrapper = $this->getConfigWrapperMock();
         $builder = new RoutesCollectionBuilder($configWrapper);
 
-        $builder = $this->injectClassList($builder, [TestControllerWithSingleMiddleware::class]);
+        $controllerClasses = [
+            'tests\TestData\TestControllers\TestControllerWithSingleMiddleware'
+        ];
 
-        $routes = $builder->buildRoutesCollection();
+        $routes = $builder->buildRoutesCollection($controllerClasses);
 
-        $this->assertCount(1, $routes);
+        $this->assertCount(1, $routes, 'No routes found for controller with single middleware');
         $this->assertCount(1, $routes[0]['middlewares']);
-        $this->assertEquals(TestMiddleware1::class, $routes[0]['middlewares'][0]['class']);
+        $this->assertEquals('tests\TestData\TestControllers\TestMiddleware1', $routes[0]['middlewares'][0]['class']);
         $this->assertEquals([], $routes[0]['middlewares'][0]['options']);
     }
 
     /**
      * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::buildRoutesCollection
+     * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::getRepositoryItems
      * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::extractMiddlewares
+     * Тест проверяет сборку маршрутов для контроллера с несколькими middleware
      */
-    public function testBuildRoutesCollectionWithControllerWithMultipleMiddlewares()
+    public function testBuildRoutesCollectionWithControllerWithMultipleMiddlewares(): void
     {
         $configWrapper = $this->getConfigWrapperMock();
         $builder = new RoutesCollectionBuilder($configWrapper);
 
-        $builder = $this->injectClassList($builder, [TestControllerWithMultipleMiddlewares::class]);
+        $controllerClasses = [
+            'tests\TestData\TestControllers\TestControllerWithMultipleMiddlewares'
+        ];
 
-        $routes = $builder->buildRoutesCollection();
+        $routes = $builder->buildRoutesCollection($controllerClasses);
 
-        $this->assertCount(1, $routes);
+        $this->assertCount(1, $routes, 'No routes found for controller with multiple middlewares');
         $this->assertCount(2, $routes[0]['middlewares']);
-
-        $this->assertEquals(TestMiddleware1::class, $routes[0]['middlewares'][0]['class']);
+        $this->assertEquals('tests\TestData\TestControllers\TestMiddleware1', $routes[0]['middlewares'][0]['class']);
         $this->assertEquals(['option1' => 'value1'], $routes[0]['middlewares'][0]['options']);
-
-        $this->assertEquals(TestMiddleware2::class, $routes[0]['middlewares'][1]['class']);
+        $this->assertEquals('tests\TestData\TestControllers\TestMiddleware2', $routes[0]['middlewares'][1]['class']);
         $this->assertEquals(['option2' => 'value2'], $routes[0]['middlewares'][1]['options']);
     }
 
     /**
      * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::buildRoutesCollection
+     * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::getRepositoryItems
      * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::extractMiddlewares
+     * Тест проверяет сборку маршрутов для нескольких контроллеров с middleware
      */
-    public function testBuildRoutesCollectionWithMultipleControllersWithMiddlewares()
+    public function testBuildRoutesCollectionWithMultipleControllersWithMiddlewares(): void
     {
         $configWrapper = $this->getConfigWrapperMock();
         $builder = new RoutesCollectionBuilder($configWrapper);
 
-        $builder = $this->injectClassList($builder, [
-            TestControllerWithSingleMiddleware::class,
-            TestControllerWithMultipleMiddlewares::class
-        ]);
+        $controllerClasses = [
+            'tests\TestData\TestControllers\TestControllerWithSingleMiddleware',
+            'tests\TestData\TestControllers\TestControllerWithMultipleMiddlewares'
+        ];
 
-        $routes = $builder->buildRoutesCollection();
+        $routes = $builder->buildRoutesCollection($controllerClasses);
 
-        $this->assertCount(2, $routes);
+        $this->assertCount(2, $routes, 'Expected 2 routes for 2 controllers');
 
         // Первый контроллер - один middleware
         $this->assertCount(1, $routes[0]['middlewares']);
-        $this->assertEquals(TestMiddleware1::class, $routes[0]['middlewares'][0]['class']);
+        $this->assertEquals('tests\TestData\TestControllers\TestMiddleware1', $routes[0]['middlewares'][0]['class']);
 
         // Второй контроллер - два middleware
         $this->assertCount(2, $routes[1]['middlewares']);
-        $this->assertEquals(TestMiddleware1::class, $routes[1]['middlewares'][0]['class']);
-        $this->assertEquals(TestMiddleware2::class, $routes[1]['middlewares'][1]['class']);
+        $this->assertEquals('tests\TestData\TestControllers\TestMiddleware1', $routes[1]['middlewares'][0]['class']);
+        $this->assertEquals('tests\TestData\TestControllers\TestMiddleware2', $routes[1]['middlewares'][1]['class']);
     }
 
     /**
      * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::getController
      * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::injectMiddlewares
+     * Тест проверяет инъекцию middleware в контроллер
      */
-    public function testGetControllerWithMiddlewaresInjection()
+    public function testGetControllerWithMiddlewaresInjection(): void
     {
         $configWrapper = $this->getConfigWrapperMock();
         $builder = new RoutesCollectionBuilder($configWrapper);
-
-        $request = $this->createMock(Request::class);
-        $request->server['request_uri'] = '/test'; // Добавляем request_uri
-        $response = $this->createMock(Response::class);
+        $request = $this->createMock(\Swoole\Http\Request::class);
+        $request->server['request_uri'] = '/test';
+        $response = $this->createMock(\Swoole\Http\Response::class);
 
         $routeCollectionItem = [
-            'ControllerClass' => TestControllerWithMiddlewaresInjection::class,
+            'ControllerClass' => 'tests\TestData\TestControllers\TestControllerWithMiddlewaresInjection',
             'middlewares' => [
                 [
-                    'class' => TestMiddleware1::class,
+                    'class' => 'tests\TestData\TestControllers\TestMiddleware1',
                     'options' => ['injected' => 'value']
                 ]
             ],
@@ -131,117 +138,51 @@ class RoutesCollectionBuilderMiddlewareTest extends TestCase
 
         $controller = $builder->getController($routeCollectionItem, $request, $response);
 
-        $this->assertInstanceOf(AbstractController::class, $controller);
-        $this->assertInstanceOf(TestControllerWithMiddlewaresInjection::class, $controller);
+        $this->assertInstanceOf(\Sidalex\SwooleApp\Classes\Controllers\AbstractController::class, $controller);
+        $this->assertInstanceOf('tests\TestData\TestControllers\TestControllerWithMiddlewaresInjection', $controller);
 
         $middlewares = $controller->getMiddlewares();
         $this->assertCount(1, $middlewares);
-        $this->assertEquals(TestMiddleware1::class, $middlewares[0]['class']);
+        $this->assertEquals('tests\TestData\TestControllers\TestMiddleware1', $middlewares[0]['class']);
         $this->assertEquals(['injected' => 'value'], $middlewares[0]['options']);
     }
 
     /**
      * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::getController
-     * @covers \Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder::injectMiddlewares
+     * Тест проверяет создание контроллера без middleware
      */
-    public function testGetControllerWithoutMiddlewares()
+    public function testGetControllerWithoutMiddlewares(): void
     {
         $configWrapper = $this->getConfigWrapperMock();
         $builder = new RoutesCollectionBuilder($configWrapper);
-
-        $request = $this->createMock(Request::class);
-        $request->server['request_uri'] = '/test'; // Добавляем request_uri
-        $response = $this->createMock(Response::class);
+        $request = $this->createMock(\Swoole\Http\Request::class);
+        $request->server['request_uri'] = '/test';
+        $response = $this->createMock(\Swoole\Http\Response::class);
 
         $routeCollectionItem = [
-            'ControllerClass' => TestControllerWithoutMiddlewares::class,
+            'ControllerClass' => 'tests\TestData\TestControllers\TestControllerWithoutMiddlewares',
             'middlewares' => [],
             'parameters_fromURI' => []
         ];
 
         $controller = $builder->getController($routeCollectionItem, $request, $response);
 
-        $this->assertInstanceOf(AbstractController::class, $controller);
-        $this->assertInstanceOf(TestControllerWithoutMiddlewares::class, $controller);
+        $this->assertInstanceOf(\Sidalex\SwooleApp\Classes\Controllers\AbstractController::class, $controller);
+        $this->assertInstanceOf('tests\TestData\TestControllers\TestControllerWithoutMiddlewares', $controller);
 
         $middlewares = $controller->getMiddlewares();
         $this->assertEmpty($middlewares);
     }
 
-    private function getConfigWrapperMock()
+    /**
+     * Создает mock ConfigWrapper с настройками для тестов middleware
+     *
+     * @return ConfigWrapper Mock объект конфигурации
+     */
+    private function getConfigWrapperMock(): ConfigWrapper
     {
         $std = new \stdClass();
         $std->controllers = [];
         return new ConfigWrapper($std);
-    }
-
-    private function injectClassList(RoutesCollectionBuilder $builder, array $classList): RoutesCollectionBuilder
-    {
-        $reflection = new \ReflectionClass($builder);
-        $property = $reflection->getProperty('classList');
-        $property->setAccessible(true);
-        $property->setValue($builder, $classList);
-        return $builder;
-    }
-}
-
-/**
- * Test Controller Classes with Route attributes
- */
-#[Route(uri: '/test1', method: 'GET')]
-class TestControllerWithoutMiddlewares extends AbstractController
-{
-    public function execute(): Response
-    {
-        return $this->response;
-    }
-}
-
-#[Route(uri: '/test2', method: 'GET')]
-#[Middleware(TestMiddleware1::class)]
-class TestControllerWithSingleMiddleware extends AbstractController
-{
-    public function execute(): Response
-    {
-        return $this->response;
-    }
-}
-
-#[Route(uri: '/test3', method: 'GET')]
-#[Middleware(TestMiddleware1::class, ['option1' => 'value1'])]
-#[Middleware(TestMiddleware2::class, ['option2' => 'value2'])]
-class TestControllerWithMultipleMiddlewares extends AbstractController
-{
-    public function execute(): Response
-    {
-        return $this->response;
-    }
-}
-
-#[Route(uri: '/test4', method: 'GET')]
-class TestControllerWithMiddlewaresInjection extends AbstractController
-{
-    public function execute(): Response
-    {
-        return $this->response;
-    }
-}
-
-/**
- * Test Middleware Classes
- */
-class TestMiddleware1 implements MiddlewareInterface
-{
-    public function process(Request $request, Response $response, \Sidalex\SwooleApp\Application $application, callable $next): Response
-    {
-        return $next($request, $response);
-    }
-}
-
-class TestMiddleware2 implements MiddlewareInterface
-{
-    public function process(Request $request, Response $response, \Sidalex\SwooleApp\Application $application, callable $next): Response
-    {
-        return $next($request, $response);
     }
 }

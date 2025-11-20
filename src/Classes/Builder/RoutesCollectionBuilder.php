@@ -1,5 +1,4 @@
 <?php
-
 namespace Sidalex\SwooleApp\Classes\Builder;
 
 use HaydenPierce\ClassFinder\ClassFinder;
@@ -69,11 +68,6 @@ class RoutesCollectionBuilder
         return $classList;
     }
 
-    /**
-     * @param array<int,string> $classList
-     * @return array<int,array<mixed>>
-     * @throws \Exception
-     */
     private function getRepositoryItems(array $classList): array
     {
         $repository = [];
@@ -93,7 +87,8 @@ class RoutesCollectionBuilder
      */
     private function getRouteAttribute(string $class): ?\ReflectionAttribute
     {
-        $attributes = $this->getAttributeReflection($class);
+        $reflection = new \ReflectionClass($class);
+        $attributes = $reflection->getAttributes();
 
         foreach ($attributes as $attribute) {
             if ($attribute->getName() === Route::class) {
@@ -122,8 +117,14 @@ class RoutesCollectionBuilder
     {
         $repositoryItem = [];
         $parameters_fromURIItem = [];
-        $url_arr = explode('/', $attributes->getArguments()['uri']);
+
+        $routeInstance = $attributes->newInstance();
+        $uri = $routeInstance->uri;
+        $method = $routeInstance->method;
+
+        $url_arr = explode('/', $uri);
         $url_arr = $this->validatorUriArr->validate($url_arr);
+
         foreach ($url_arr as $number => $value) {
             $itemUri = $value;
             if ((str_starts_with($itemUri, '{')) && (str_ends_with($itemUri, '}'))) {
@@ -133,7 +134,7 @@ class RoutesCollectionBuilder
             $repositoryItem['route_pattern_list'][$number] = $itemUri;
         }
         $repositoryItem['parameters_fromURI'] = $parameters_fromURIItem;
-        $repositoryItem['method'] = $attributes->getArguments()['method'];
+        $repositoryItem['method'] = $method;
         $repositoryItem['ControllerClass'] = $class;
         $repositoryItem['middlewares'] = $this->extractMiddlewares($class);
 

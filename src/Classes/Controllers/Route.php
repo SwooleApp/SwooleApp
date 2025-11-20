@@ -1,5 +1,4 @@
 <?php
-
 namespace Sidalex\SwooleApp\Classes\Controllers;
 
 use Attribute;
@@ -8,9 +7,9 @@ use Attribute;
 class Route
 {
     // @phpstan-ignore-next-line
-    private string $uri;
+    public string $uri;
     // @phpstan-ignore-next-line
-    private string $method;
+    public string $method;
 
     /**
      * @param string $uri
@@ -21,6 +20,4 @@ class Route
         $this->uri = $uri;
         $this->method = $method;
     }
-
-
 }
