@@ -5,6 +5,7 @@ use PHPUnit\Framework\TestCase;
 use Sidalex\SwooleApp\Classes\Controllers\AbstractController;
 use Sidalex\SwooleApp\Classes\Middleware\Middleware;
 use Sidalex\SwooleApp\Classes\Middleware\MiddlewareInterface;
+use Sidalex\SwooleApp\Classes\Middleware\ConfigurableMiddlewareInterface;
 use Sidalex\SwooleApp\Application;
 use Swoole\Http\Request;
 use Swoole\Http\Response;
@@ -118,6 +119,7 @@ class AbstractControllerMiddlewareTest extends TestCase
 
         $this->assertInstanceOf(MiddlewareInterface::class, $middleware);
         $this->assertInstanceOf(TestConfigurableMiddleware::class, $middleware);
+        $this->assertInstanceOf(ConfigurableMiddlewareInterface::class, $middleware);
 
         // Проверяем что опции установились
         $reflectionMiddleware = new \ReflectionClass($middleware);
@@ -150,6 +152,7 @@ class AbstractControllerMiddlewareTest extends TestCase
 
         $this->assertInstanceOf(MiddlewareInterface::class, $middleware);
         $this->assertInstanceOf(TestSimpleMiddleware::class, $middleware);
+        $this->assertNotInstanceOf(ConfigurableMiddlewareInterface::class, $middleware);
     }
 
     /**
@@ -227,7 +230,7 @@ class TestMiddleware2 implements MiddlewareInterface
     }
 }
 
-class TestConfigurableMiddleware implements MiddlewareInterface
+class TestConfigurableMiddleware implements MiddlewareInterface, ConfigurableMiddlewareInterface
 {
     private array $options;
 
