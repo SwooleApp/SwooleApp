@@ -30,6 +30,7 @@ class Application
     protected array $routesCollection;
 
     protected StateContainerWrapper $stateContainer;
+    protected array $globalMiddlewares = [];
 
     /**
      * @param \stdClass|null $baseConfig
@@ -55,6 +56,7 @@ class Application
             }
 
             $this->config = new ConfigWrapper($loader->getConfig());
+            $this->initGlobalMiddlewares();
             $this->initializeRoutes($routesCollectionBuilder);
             $this->initializeStateContainer();
 
@@ -102,6 +104,36 @@ class Application
         $this->stateContainer = new StateContainerWrapper($stateContainer);
     }
 
+
+    protected function initGlobalMiddlewares(): void
+    {
+        $globalMiddlewaresConfig = $this->config->getConfigFromKey('globalMiddlewares');
+
+        if (is_array($globalMiddlewaresConfig)) {
+            foreach ($globalMiddlewaresConfig as $middlewareConfig) {
+                if (is_string($middlewareConfig)) {
+                    $this->globalMiddlewares[] = [
+                        'class' => $middlewareConfig,
+                        'options' => []
+                    ];
+                } elseif (is_array($middlewareConfig) && isset($middlewareConfig['class'])) {
+                    $this->globalMiddlewares[] = [
+                        'class' => $middlewareConfig['class'],
+                        'options' => $middlewareConfig['options'] ?? []
+                    ];
+                }
+            }
+        }
+    }
+
+    /**
+     * Получение глобальных Middleware
+     */
+    public function getGlobalMiddlewares(): array
+    {
+        return $this->globalMiddlewares;
+    }
+
     /**
      * @return array<int, array<mixed>>
      */
@@ -120,7 +152,9 @@ class Application
             $controller = $Route_builder->getController($itemRouteCollection, $request, $response);
         }
         $controller->setApplication($this, $server);
-        $response = $controller->execute();
+
+        $response = $controller->executeWithMiddlewares();
+
         unset($controller);
     }
 
@@ -156,10 +190,12 @@ class Application
 
         } catch (\Throwable $e) {
             // Логирование ошибки (можно добавить зависимость от PSR-3 LoggerInterface)
-            error_log("Task execution failed: " . $e->getMessage());
+            if ($this->config->getConfigFromKey('APP_DEBUG')) {
+                error_log("Task execution failed: " . $e->getMessage());
+            }
 
             // Возвращаем подробную информацию об ошибке в debug режиме
-            $errorDetails = $this->config->getConfigFromKey('app_debug')
+            $errorDetails = $this->config->getConfigFromKey('APP_DEBUG')
                 ? ['message' => $e->getMessage(), 'trace' => $e->getTraceAsString()]
                 : 'Task execution failed';
 

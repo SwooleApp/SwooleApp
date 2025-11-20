@@ -20,4 +20,10 @@ interface CyclicJobsInterface
      * @return void
      */
     public function runJob(): void;
+
+    /**
+     * A method that returns the delay time after start the Application of a cyclic task execution in seconds.
+     * @return float
+     */
+    public function getStartupSleepSecond(): float;
 }

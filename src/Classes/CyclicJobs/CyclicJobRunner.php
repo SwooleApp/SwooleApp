@@ -22,9 +22,10 @@ class CyclicJobRunner
         foreach ($this->jobs as $job) {
             go(function () use ($job) {
                 // @phpstan-ignore-next-line
+                Coroutine::sleep($job->getStartupSleepSecond());
                 while (true) {
-                    Coroutine::sleep($job->getTimeSleepSecond());
                     $job->runJob();
+                    Coroutine::sleep($job->getTimeSleepSecond());
                 }
             });
         }
