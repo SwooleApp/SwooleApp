@@ -4,29 +4,41 @@
 [![Latest Stable Version](http://poser.pugx.org/sidalex/swoole-app/v)](https://packagist.org/packages/sidalex/swoole-app) [![Total Downloads](http://poser.pugx.org/sidalex/swoole-app/downloads)](https://packagist.org/packages/sidalex/swoole-app) [![Latest Unstable Version](http://poser.pugx.org/sidalex/swoole-app/v/unstable)](https://packagist.org/packages/sidalex/swoole-app) [![License](http://poser.pugx.org/sidalex/swoole-app/license)](https://packagist.org/packages/sidalex/swoole-app) [![PHP Version Require](http://poser.pugx.org/sidalex/swoole-app/require/php)](https://packagist.org/packages/sidalex/swoole-app)
 
 [en](#sidalexswoole-app-framework-for-working-with-swoole) | [ru](#sidalexswoole-app-фреймворк-для-работы-со-swoole)
-# sidalex/swoole-app Framework for Working with Swoole
+# Swoole-app Framework for Working with Swoole
+<!-- TOC -->
+* [Install](#install)
+* [Config](#config)
+* [List of config parameters](#list-of-config-parameters)
+    * [.env File Format or environment variables in docker](#env-file-format-or-environment-variables-in-docker)
+    * [Configuration Validation](#configuration-validation)
+* [Task](#task)
+    * [Methods:](#methods-)
+        * [task](#task-1)
+        * [taskwait](#taskwait)
+* [BasicTaskData](#basictaskdata)
+    * [Parameters](#parameters)
+* [TaskResulted](#taskresulted)
+    * [Properties:](#properties-)
+* [Cyclic Job](#cyclic-job)
+* [Middleware](#middleware)
+    * [Global Middleware](#global-middleware)
+    * [Controller-specific Middleware](#controller-specific-middleware)
+    * [Creating Custom Middleware](#creating-custom-middleware)
+    * [Configurable Middleware](#configurable-middleware)
+    * [Middleware Configuration Validation](#middleware-configuration-validation)
+* [Controller](#controller)
+    * [uri attribute parameter](#uri-attribute-parameter)
+    * [method attribute parameter](#method-attribute-parameter)
+    * [Request processing](#request-processing)
+    * [Response](#response)
+    * [Request](#request)
+* [notFoundController](#notfoundcontroller)
+* [State Containers](#state-containers)
+    * [Creating a State Container](#creating-a-state-container)
+    * [Accessing State Containers](#accessing-state-containers)
+    * [Best Practices State Containers](#best-practices-state-containers)
+<!-- TOC -->
 
-1. [Install](#install)
-1. [Config](#config)
-1. [List of config parameters](#list-of-config-parameters)
-1. [Task](#task)
-   1. [Methods:](#methods-)
-1. [BasicTaskData](#basictaskdata)
-   1. [Parameters](#parameters)
-1. [TaskResulted](#taskresulted)
-   1. [Properties:](#properties:)
-1. [Cyclic Job](#cyclic-job)
-1. [Controller](#controller)
-   1. [uri attribute parameter](#uri-attribute-parameter)
-   1. [method attribute parameter](#method-attribute-parameter)
-   1. [Request processing](#request-processing)
-   1. [Response](#response)
-   1. [Request](#request)
-1. [notFoundController](#notfoundcontroller)
-1. [State Containers](#state-containers)
-   1. [Creation](#creating-a-state-container)
-   1. [Usage](#accessing-state-containers)
-   1. [Best Practices](#best-practices-state-containers)
 
 ## Install
 
@@ -336,6 +348,120 @@ getTimeSleepSecond - returns the time in seconds at which the runJob method will
 
 runJob - a method that contains the useful payload in terms of business logic. This is the code that contains the main business logic that should be executed cyclically.
 
+
+
+## Middleware
+
+The application supports a Middleware system for HTTP request processing.
+
+### Global Middleware
+
+Global Middleware are configured in the application configuration:
+
+```php
+$config = new \stdClass();
+$config->globalMiddlewares = [
+    // Simple string - middleware class
+    'App\Middleware\AuthMiddleware',
+    
+    // Or array with class and options
+    [
+        'class' => 'App\Middleware\CorsMiddleware',
+        'options' => ['origins' => ['https://example.com']]
+    ]
+];
+```
+
+### Controller-specific Middleware
+
+Middleware can be attached to specific controllers using attributes:
+
+```php
+use Sidalex\SwooleApp\Classes\Controllers\Route;
+use Sidalex\SwooleApp\Classes\Middleware\Middleware;
+
+#[Route(uri: '/api/protected', method: 'GET')]
+#[Middleware(middlewareClass: 'App\Middleware\AuthMiddleware')]
+#[Middleware(middlewareClass: 'App\Middleware\LogMiddleware', options: ['level' => 'info'])]
+class ProtectedController extends AbstractController
+{
+    public function execute(): \Swoole\Http\Response
+    {
+        // Controller logic
+    }
+}
+```
+
+### Creating Custom Middleware
+
+Middleware must implement `MiddlewareInterface`:
+
+```php
+use Sidalex\SwooleApp\Classes\Middleware\MiddlewareInterface;
+use Sidalex\SwooleApp\Application;
+
+class AuthMiddleware implements MiddlewareInterface
+{
+    public function process(
+        \Swoole\Http\Request $request,
+        \Swoole\Http\Response $response,
+        Application $application,
+        callable $next
+    ): \Swoole\Http\Response {
+        // Authentication check
+        if (!$this->isAuthenticated($request)) {
+            $response->setStatusCode(401);
+            $response->end('Unauthorized');
+            return $response;
+        }
+        
+        // Continue middleware chain
+        return $next($request, $response);
+    }
+}
+```
+
+### Configurable Middleware
+
+For middleware that requires configuration, implement `ConfigurableMiddlewareInterface`:
+
+```php
+use Sidalex\SwooleApp\Classes\Middleware\ConfigurableMiddlewareInterface;
+
+class CorsMiddleware implements ConfigurableMiddlewareInterface
+{
+    private array $options;
+    
+    public function __construct(array $options = [])
+    {
+        $this->options = $options;
+    }
+    
+    public function process(/* ... */): \Swoole\Http\Response
+    {
+        // Use configuration options
+        $allowedOrigins = $this->options['origins'] ?? ['*'];
+        // ...
+    }
+}
+```
+
+### Middleware Configuration Validation
+
+To validate middleware configuration, use `MiddlewareConfigValidator`:
+
+```php
+use Sidalex\SwooleApp\Classes\Validators\MiddlewareConfigValidator;
+
+$validators = [MiddlewareConfigValidator::class];
+$app = new Application($config, $validators);
+```
+
+The validator checks:
+- Configuration format correctness
+- Middleware class existence
+- MiddlewareInterface implementation
+
 ## Controller
 To create new routes, the Controller class is used. To add a new route, you need to create a class that implements the ControllerInterface interface and add the namespace in which this class is contained to the configuration file with the key "controllers". More details here
 
@@ -531,29 +657,39 @@ Key Naming: Use descriptive and unique keys for your containers to avoid collisi
 
 
 
-# sidalex/swoole-app фреймворк для работы со swoole
+# swoole-app фреймворк для работы со swoole
 
-1. [Установка](#установка)
-1. [Config](#конфиг)
-   1. [Список параметров конфига](#список-параметров-конфига)
-1. [Task](#task-задача)
-   1. [Методы:](#методы-task-)
-1. [BasicTaskData](#класс-basictaskdata)
-1. [Класс TaskResulted](#класс-taskresulted)
-   1. [Свойства:](#свойства-taskresulted-)
-   1. [Методы:](#методы-taskresulted-)
-1. [Cyclic Job](#класс-cyclic-job)
-1. [Controller](#класс-controller)
-   1. [uri атрибутивный параметр](#uri-атрибутивный-параметр)
-   1. [параметр атрибута](#параметр-атрибута)
-   1. [Обработка запроса](#обработка-запроса)
-   1. [Response](#response-1)
-   1. [Запрос](#запрос)
-1. [notFoundController](#notfoundcontroller-1)
-1. [State Containers](#контейнеры-состояний)
-   - [Создание](#создание-контейнера-состояний)
-   - [Использование](#доступ-к-контейнерам-состояний)
-   - [Примеры](#лучшие-практики-использования-контейнеров-состояний)
+<!-- TOC -->
+* [Установка](#установка)
+* [Конфиг](#конфиг)
+   * [Список параметров конфига](#список-параметров-конфига)
+   * [Формат .env файла или переменных окружения в docker](#формат-env-файла-или-переменных-окружения-в-docker)
+   * [Валидация конфигурации](#валидация-конфигурации)
+* [Task Задача](#task-задача)
+   * [Методы Task:](#методы-task-)
+* [Класс BasicTaskData](#класс-basictaskdata)
+* [Класс TaskResulted](#класс-taskresulted)
+   * [Свойства TaskResulted:](#свойства-taskresulted-)
+   * [Методы TaskResulted:](#методы-taskresulted-)
+* [Класс Cyclic Job](#класс-cyclic-job)
+* [Middleware](#middleware)
+   * [Глобальные Middleware](#глобальные-middleware)
+   * [Middleware для контроллеров](#middleware-для-контроллеров)
+   * [Создание собственного Middleware](#создание-собственного-middleware)
+   * [Конфигурируемые Middleware](#конфигурируемые-middleware)
+   * [Валидация конфигурации Middleware](#валидация-конфигурации-middleware)
+* [Класс Controller](#класс-controller)
+   * [uri атрибутивный параметр](#uri-атрибутивный-параметр)
+   * [параметр атрибута](#параметр-атрибута)
+   * [Обработка запроса](#обработка-запроса)
+   * [Response](#response)
+   * [Запрос](#запрос)
+* [notFoundController](#notfoundcontroller)
+* [Контейнеры состояний](#контейнеры-состояний)
+   * [Создание контейнера состояний](#создание-контейнера-состояний)
+   * [Доступ к контейнерам состояний](#доступ-к-контейнерам-состояний)
+   * [Лучшие практики использования Контейнеров состояний](#лучшие-практики-использования-контейнеров-состояний)
+<!-- TOC -->
 
 ## Установка
 
@@ -652,11 +788,11 @@ SWOOLE_APP_DB__PORT=3306
 
 ```php
 object(stdClass) {
-  ["DEBUG"] => true
-  ["DB"] => object(stdClass) {
+["DEBUG"] => true
+["DB"] => object(stdClass) {
     ["HOST"] => "localhost"
     ["PORT"] => 3306
-  }
+}
 }
 ```
 
@@ -800,9 +936,9 @@ $config->CyclicJobs = [
 Пример инициализации конфига с использованием файла json:
 ```php
 {
-  "CyclicJobs": [
+"CyclicJobs": [
     "Sidalex\\TestSwoole\\CyclicJobs\\TestCyclicJobs"
-  ]
+]
 }
 ```
 Пример класса для Cyclic Job:
@@ -841,6 +977,119 @@ class MyCyclicJob implements CyclicJobsInterface
 Метод getTimeSleepSecond возвращает время в секундах, через которое будет выполняться метод runJob периодически.
 
 Метод runJob содержит полезную нагрузку в плане бизнес-логики. Это метод содержит бизнес-логику, которая должна выполняться циклически.
+
+## Middleware
+
+Приложение поддерживает систему Middleware для обработки HTTP-запросов.
+
+### Глобальные Middleware
+
+Глобальные Middleware настраиваются в конфигурации приложения:
+
+```php
+$config = new \stdClass();
+$config->globalMiddlewares = [
+    // Простая строка - класс Middleware
+    'App\Middleware\AuthMiddleware',
+    
+    // Или массив с классом и опциями
+    [
+        'class' => 'App\Middleware\CorsMiddleware',
+        'options' => ['origins' => ['https://example.com']]
+    ]
+];
+```
+
+### Middleware для контроллеров
+
+Middleware можно прикреплять к конкретным контроллерам с помощью атрибутов:
+
+```php
+use Sidalex\SwooleApp\Classes\Controllers\Route;
+use Sidalex\SwooleApp\Classes\Middleware\Middleware;
+
+#[Route(uri: '/api/protected', method: 'GET')]
+#[Middleware(middlewareClass: 'App\Middleware\AuthMiddleware')]
+#[Middleware(middlewareClass: 'App\Middleware\LogMiddleware', options: ['level' => 'info'])]
+class ProtectedController extends AbstractController
+{
+    public function execute(): \Swoole\Http\Response
+    {
+        // Логика контроллера
+    }
+}
+```
+
+### Создание собственного Middleware
+
+Middleware должен реализовывать `MiddlewareInterface`:
+
+```php
+use Sidalex\SwooleApp\Classes\Middleware\MiddlewareInterface;
+use Sidalex\SwooleApp\Application;
+
+class AuthMiddleware implements MiddlewareInterface
+{
+    public function process(
+        \Swoole\Http\Request $request,
+        \Swoole\Http\Response $response,
+        Application $application,
+        callable $next
+    ): \Swoole\Http\Response {
+        // Проверка аутентификации
+        if (!$this->isAuthenticated($request)) {
+            $response->setStatusCode(401);
+            $response->end('Unauthorized');
+            return $response;
+        }
+        
+        // Продолжение цепочки Middleware
+        return $next($request, $response);
+    }
+}
+```
+
+### Конфигурируемые Middleware
+
+Для Middleware, требующих конфигурации, реализуйте `ConfigurableMiddlewareInterface`:
+
+```php
+use Sidalex\SwooleApp\Classes\Middleware\ConfigurableMiddlewareInterface;
+
+class CorsMiddleware implements ConfigurableMiddlewareInterface
+{
+    private array $options;
+    
+    public function __construct(array $options = [])
+    {
+        $this->options = $options;
+    }
+    
+    public function process(/* ... */): \Swoole\Http\Response
+    {
+        // Использование опций конфигурации
+        $allowedOrigins = $this->options['origins'] ?? ['*'];
+        // ...
+    }
+}
+```
+
+### Валидация конфигурации Middleware
+
+Для проверки корректности конфигурации Middleware используйте `MiddlewareConfigValidator`:
+
+```php
+use Sidalex\SwooleApp\Classes\Validators\MiddlewareConfigValidator;
+
+$validators = [MiddlewareConfigValidator::class];
+$app = new Application($config, $validators);
+```
+
+Валидатор проверяет:
+- Корректность формата конфигурации
+- Существование классов Middleware
+- Реализацию MiddlewareInterface
+
 
 ## Класс Controller
 Для создания новых маршрутов используется класс Controller. Чтобы добавить новый маршрут, вам необходимо создать класс, реализующий интерфейс ControllerInterface, и добавить пространство имен, в котором содержится этот класс, в файл конфигурации с ключом "controllers". Подробнее здесь
