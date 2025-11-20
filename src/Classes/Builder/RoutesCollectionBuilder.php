@@ -17,6 +17,7 @@ class RoutesCollectionBuilder
      * @var array<int,string>
      */
     protected array $classList;
+    protected ConfigWrapper $config;
     protected ValidatorUriArr $validatorUriArr;
 
     /**
@@ -24,11 +25,12 @@ class RoutesCollectionBuilder
      */
     public function __construct(ConfigWrapper $config)
     {
-        $this->classList = $this->getControllerClasses($config);
+        $this->config = $config;
         $this->validatorUriArr = new ValidatorUriArr();
     }
 
     /**
+     * @param string[]|null $controllerClassesList
      * @return array<int,array<mixed>>
      * example [
      *      [
@@ -42,11 +44,12 @@ class RoutesCollectionBuilder
      * @throws \Exception
      * @throws \ReflectionException
      */
-    public function buildRoutesCollection(): array
+    public function buildRoutesCollection(?array $controllerClassesList=null): array
     {
-        $repository = $this->getRepositoryItems($this->classList);
-
-        return $repository;
+        if(is_null($controllerClassesList)){
+            $controllerClassesList = $this->getControllerClasses($this->config);
+        }
+        return $this->getRepositoryItems($controllerClassesList);
     }
 
     /**
@@ -103,7 +106,7 @@ class RoutesCollectionBuilder
     }
 
     /**
-     * @param \ReflectionAttribute<Route> $attributes
+     * @param \ReflectionAttribute<object> $attributes
      * @param string $class
      * @return array<string,mixed>
      * example      [
@@ -121,7 +124,6 @@ class RoutesCollectionBuilder
         $parameters_fromURIItem = [];
         $url_arr = explode('/', $attributes->getArguments()['uri']);
         $url_arr = $this->validatorUriArr->validate($url_arr);
-
         foreach ($url_arr as $number => $value) {
             $itemUri = $value;
             if ((str_starts_with($itemUri, '{')) && (str_ends_with($itemUri, '}'))) {
@@ -130,7 +132,6 @@ class RoutesCollectionBuilder
             }
             $repositoryItem['route_pattern_list'][$number] = $itemUri;
         }
-
         $repositoryItem['parameters_fromURI'] = $parameters_fromURIItem;
         $repositoryItem['method'] = $attributes->getArguments()['method'];
         $repositoryItem['ControllerClass'] = $class;
@@ -222,7 +223,6 @@ class RoutesCollectionBuilder
         $className = $itemRouteCollection['ControllerClass'];
         $uri = explode("/", $request->server['request_uri']);
         $UriParamsInjections = [];
-
         foreach ($itemRouteCollection['parameters_fromURI'] as $keyInUri => $keyInParamsName) {
             $UriParamsInjections[$keyInParamsName] = $uri[$keyInUri];
         }

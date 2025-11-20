@@ -18,10 +18,13 @@ class TaskResulted
      * @return mixed
      * @throws TaskException
      */
-    public function getResult(): mixed
-    {
+    public function getResult(): mixed {
         if (!$this->success) {
-            throw new TaskException($this->result);
+            throw new TaskException(
+                is_string($this->result)
+                    ? $this->result
+                    : "Task execution failed: " . var_export($this->result, true)
+            );
         }
         return $this->result;
     }
