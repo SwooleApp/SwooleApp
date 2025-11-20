@@ -160,10 +160,11 @@ class Application
         foreach ($listCyclicJobs as $job)
             // @phpstan-ignore-next-line
             go(function () use ($app, $job) {
+                Coroutine::sleep($job->getStartupSleepSecond());
                 // @phpstan-ignore-next-line
                 while (true) {
-                    Coroutine::sleep($job->getTimeSleepSecond());
                     $job->runJob();
+                    Coroutine::sleep($job->getTimeSleepSecond());
                 }
             });
         unset($builder);

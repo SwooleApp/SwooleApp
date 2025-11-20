@@ -10,6 +10,7 @@ abstract class AbstractCyclicJob implements CyclicJobsInterface
     protected Application $application;
     protected Server $server;
     protected float $timeSleep = 86400;
+    protected float $startupSleep = 10;
 
     public function __construct(Application $application, Server $server)
     {
@@ -20,6 +21,11 @@ abstract class AbstractCyclicJob implements CyclicJobsInterface
     public function getTimeSleepSecond(): float
     {
         return $this->timeSleep;
+    }
+
+    public function getStartupSleepSecond(): float
+    {
+        return $this->startupSleep;
     }
 
     abstract public function runJob(): void;
