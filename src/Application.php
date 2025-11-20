@@ -21,17 +21,10 @@ use Swoole\Http\Server;
 class Application
 {
     protected ConfigWrapper $config;
-    /**
-     * @var array<mixed>
-     */
     protected array $routesCollection;
-
     protected StateContainerWrapper $stateContainer;
+    protected array $globalMiddlewares = [];
 
-    /**
-     * @param \stdClass $configPath
-     * @param string[] $ConfigValidationList
-     */
     public function __construct(\stdClass $configPath, array $ConfigValidationList = [])
     {
         try {
@@ -43,9 +36,14 @@ class Application
                     //todo: add logic to logs inition not ConfigValidatorInterface validation class
                 }
             }
+
             $this->config = new ConfigWrapper($configPath);
+
+            $this->initGlobalMiddlewares();
+
             $Route_builder = new RoutesCollectionBuilder($this->config);
             $this->routesCollection = $Route_builder->buildRoutesCollection();
+
             if (
                 !empty($this->config->getConfigFromKey('StateContainerInitiation'))
                 && is_array($this->config->getConfigFromKey('StateContainerInitiation'))
@@ -72,6 +70,36 @@ class Application
         }
     }
 
+
+    protected function initGlobalMiddlewares(): void
+    {
+        $globalMiddlewaresConfig = $this->config->getConfigFromKey('globalMiddlewares');
+
+        if (is_array($globalMiddlewaresConfig)) {
+            foreach ($globalMiddlewaresConfig as $middlewareConfig) {
+                if (is_string($middlewareConfig)) {
+                    $this->globalMiddlewares[] = [
+                        'class' => $middlewareConfig,
+                        'options' => []
+                    ];
+                } elseif (is_array($middlewareConfig) && isset($middlewareConfig['class'])) {
+                    $this->globalMiddlewares[] = [
+                        'class' => $middlewareConfig['class'],
+                        'options' => $middlewareConfig['options'] ?? []
+                    ];
+                }
+            }
+        }
+    }
+
+    /**
+     * Получение глобальных Middleware
+     */
+    public function getGlobalMiddlewares(): array
+    {
+        return $this->globalMiddlewares;
+    }
+
     /**
      * @return array<int, array<mixed>>
      */
@@ -80,17 +108,22 @@ class Application
         return $this->routesCollection;
     }
 
-    public function execute(\Swoole\Http\Request $request, \Swoole\Http\Response $response, Server $server) :void
+    public function execute(\Swoole\Http\Request $request, \Swoole\Http\Response $response, Server $server): void
     {
         $Route_builder = new RoutesCollectionBuilder($this->config);
         $itemRouteCollection = $Route_builder->searchInRoute($request, $this->routesCollection);
+
         if (empty($itemRouteCollection)) {
             $controller = (new NotFoundControllerBuilder($request, $response, $this->config))->build();
         } else {
             $controller = $Route_builder->getController($itemRouteCollection, $request, $response);
         }
+
         $controller->setApplication($this, $server);
-        $response = $controller->execute();
+
+        // Используем executeWithMiddlewares вместо execute
+        $response = $controller->executeWithMiddlewares();
+
         unset($controller);
     }
 
