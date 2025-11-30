@@ -68,6 +68,11 @@ class RoutesCollectionBuilder
         return $classList;
     }
 
+    /**
+     * @param array<int,string> $classList
+     * @return array<int,array<mixed>>
+     * @throws \Exception
+     */
     private function getRepositoryItems(array $classList): array
     {
         $repository = [];
@@ -87,6 +92,9 @@ class RoutesCollectionBuilder
      */
     private function getRouteAttribute(string $class): ?\ReflectionAttribute
     {
+        if (!class_exists($class)) {
+            return null;
+        }
         $reflection = new \ReflectionClass($class);
         $attributes = $reflection->getAttributes();
 
@@ -101,7 +109,7 @@ class RoutesCollectionBuilder
     }
 
     /**
-     * @param \ReflectionAttribute<object> $attributes
+     * @param \ReflectionAttribute<Route> $attributes
      * @param string $class
      * @return array<string,mixed>
      * example      [
@@ -143,19 +151,26 @@ class RoutesCollectionBuilder
 
     /**
      * @param string $class
-     * @return array<int, array<string, array<string,mixed>>>
+     * @return array<int, array{class: string, options: array<mixed>}>
      * @throws \ReflectionException
      */
     private function extractMiddlewares(string $class): array
     {
         $middlewares = [];
+        if (!class_exists($class)) {
+            return [];
+        }
         $reflection = new \ReflectionClass($class);
         $attributes = $reflection->getAttributes();
 
         foreach ($attributes as $attribute) {
             $attributeInstance = $attribute->newInstance();
 
-            if ($attributeInstance instanceof Middleware) {
+            if (
+                ($attributeInstance instanceof Middleware)
+                && is_string($attributeInstance->middlewareClass)
+                && is_array($attributeInstance->options)
+            ) {
                 $middlewares[] = [
                     'class' => $attributeInstance->middlewareClass,
                     'options' => $attributeInstance->options
@@ -208,17 +223,11 @@ class RoutesCollectionBuilder
     }
 
     /**
-     * @param string $class
-     * @return \ReflectionAttribute<object>[]
-     * @throws \ReflectionException
+     * @param mixed $itemRouteCollection
+     * @param \Swoole\Http\Request $request
+     * @param \Swoole\Http\Response $response
+     * @return ControllerInterface
      */
-    private function getAttributeReflection(string $class): array
-    {
-        // @phpstan-ignore-next-line
-        $reflection = new \ReflectionClass($class);
-        return $reflection->getAttributes();
-    }
-
     public function getController(mixed $itemRouteCollection, \Swoole\Http\Request $request, \Swoole\Http\Response $response): ControllerInterface
     {
         $className = $itemRouteCollection['ControllerClass'];
@@ -243,11 +252,13 @@ class RoutesCollectionBuilder
     }
 
     /**
-     * Инъекция Middleware в контроллер
+     * @param ControllerInterface $controller
+     * @param array<int, array{class: string, options: array<mixed>}> $middlewaresConfig
+     * @return void
      */
     private function injectMiddlewares(ControllerInterface $controller, array $middlewaresConfig): void
     {
-        if ($controller instanceof \Sidalex\SwooleApp\Classes\Controllers\AbstractController) {
+        if ($controller instanceof ControllerInterface) {
             // Используем рефлексию для установки middlewares
             $reflection = new \ReflectionClass($controller);
             $property = $reflection->getProperty('middlewares');
