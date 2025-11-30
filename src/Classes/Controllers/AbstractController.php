@@ -20,7 +20,7 @@ abstract class AbstractController implements ControllerInterface
     protected Application $application;
     protected Server $server;
     /**
-     * @var MiddlewareInterface[]
+     * @var array<int, array{class: string, options: array<mixed>}>
      */
     protected array $middlewares = [];
 
@@ -39,7 +39,7 @@ abstract class AbstractController implements ControllerInterface
         $this->server = $server;
     }
     /**
-     * @return MiddlewareInterface[]
+     * @return array<int, array{class: string, options: array<mixed>}>
      */
     public function getMiddlewares(): array
     {
@@ -96,12 +96,13 @@ abstract class AbstractController implements ControllerInterface
     }
 
     /**
-     * Фабрика для создания объектов Middleware
+     * @param array{class: string, options: array<mixed>} $config
+     * @return MiddlewareInterface
      */
     protected function createMiddleware(array $config): MiddlewareInterface
     {
         $className = $config['class'];
-        $options = $config['options'] ?? [];
+        $options = $config['options'];
 
         if (!Utilities::classImplementInterface($className, MiddlewareInterface::class)) {
             throw new \InvalidArgumentException("Middleware class {$className} must implement MiddlewareInterface");
@@ -109,9 +110,14 @@ abstract class AbstractController implements ControllerInterface
 
         // Для Middleware с поддержкой конфигурации
         if (Utilities::classImplementInterface($className, ConfigurableMiddlewareInterface::class)) {
+            /**
+             * @var ConfigurableMiddlewareInterface
+             */
             return new $className($options);
         }
-
+        /**
+         * @var ConfigurableMiddlewareInterface
+         */
         return new $className();
     }
 

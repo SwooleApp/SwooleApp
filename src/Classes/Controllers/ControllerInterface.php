@@ -3,6 +3,7 @@
 namespace Sidalex\SwooleApp\Classes\Controllers;
 
 use Sidalex\SwooleApp\Application;
+use Swoole\Http\Response;
 use Swoole\Http\Server;
 
 interface ControllerInterface
@@ -14,7 +15,7 @@ interface ControllerInterface
      */
     public function __construct(\Swoole\Http\Request $request, \Swoole\Http\Response $response, array $uri_params = []);
 
-    public function execute(): \Swoole\Http\Response;
+    public function executeWithMiddlewares(): Response;
 
     public function setApplication(Application $application, Server $server): void;
 }
