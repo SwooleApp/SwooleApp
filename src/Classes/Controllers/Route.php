@@ -6,9 +6,7 @@ use Attribute;
 #[Attribute]
 class Route
 {
-    // @phpstan-ignore-next-line
     public string $uri;
-    // @phpstan-ignore-next-line
     public string $method;
 
     /**
