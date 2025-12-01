@@ -21,8 +21,8 @@ class CyclicJobRunner
     public function start(): void {
         foreach ($this->jobs as $job) {
             go(function () use ($job) {
-                // @phpstan-ignore-next-line
                 Coroutine::sleep($job->getStartupSleepSecond());
+                // @phpstan-ignore-next-line
                 while (true) {
                     $job->runJob();
                     Coroutine::sleep($job->getTimeSleepSecond());
