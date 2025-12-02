@@ -6,8 +6,14 @@ use Sidalex\SwooleApp\Application;
 
 abstract class AbstractMiddleware implements ConfigurableMiddlewareInterface
 {
+    /**
+     * @var array<mixed>
+     */
     protected array $options;
 
+    /**
+     * @param array<mixed> $options
+     */
     public function __construct(array $options = [])
     {
         $this->options = $options;
