@@ -30,6 +30,9 @@ class Application
     protected array $routesCollection;
 
     protected StateContainerWrapper $stateContainer;
+    /**
+     * @var array<array{class: string, options: array<mixed>}>
+     */
     protected array $globalMiddlewares = [];
 
     /**
@@ -127,7 +130,7 @@ class Application
     }
 
     /**
-     * Получение глобальных Middleware
+     * @return array<array{class: string, options: array<mixed>}>
      */
     public function getGlobalMiddlewares(): array
     {

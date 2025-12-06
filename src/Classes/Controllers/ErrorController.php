@@ -21,7 +21,7 @@ class ErrorController implements ControllerInterface
         $this->errors_message = $uri_params;
     }
 
-    public function execute(): \Swoole\Http\Response
+    public function executeWithMiddlewares(): \Swoole\Http\Response
     {
         $errorBuilder = new ErrorResponseBuilder($this->response);
         return $errorBuilder->errorResponse($this->errors_message['message']);
