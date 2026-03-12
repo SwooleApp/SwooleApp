@@ -7,10 +7,10 @@ use Sidalex\SwooleApp\Classes\Constants\ApplicationConstants;
 use Sidalex\SwooleApp\Classes\CyclicJobs\CyclicJobRunner;
 use Sidalex\SwooleApp\Classes\Tasks\Executors\TaskExecutorInterface;
 use Sidalex\SwooleApp\Classes\Validators\ConfigValidatorInterface;
-
 use Sidalex\SwooleApp\Classes\Builder\NotFoundControllerBuilder;
 use Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder;
 use Sidalex\SwooleApp\Classes\CyclicJobs\CyclicJobsBuilder;
+use Sidalex\SwooleApp\Classes\CyclicJobs\CyclicJobOrchestrator;
 use Sidalex\SwooleApp\Classes\Initiation\StateContainerInitiationInterface;
 use Sidalex\SwooleApp\Classes\Tasks\Data\TaskDataInterface;
 use Sidalex\SwooleApp\Classes\Tasks\TaskResulted;
@@ -19,36 +19,22 @@ use Sidalex\SwooleApp\Classes\Wrapper\ConfigWrapper;
 use Sidalex\SwooleApp\Classes\Wrapper\StateContainerWrapper;
 use Swoole\Coroutine;
 use Swoole\Http\Server;
+use Swoole\Constant;
 
-
-class Application
-{
+class Application {
     protected ConfigWrapper $config;
-    /**
-     * @var array<mixed>
-     */
     protected array $routesCollection;
-
     protected StateContainerWrapper $stateContainer;
-    /**
-     * @var array<array{class: string, options: array<mixed>}>
-     */
     protected array $globalMiddlewares = [];
+    protected ?CyclicJobOrchestrator $cyclicJobOrchestrator = null;
+    protected ?Server $server = null;
 
-    /**
-     * @param \stdClass|null $baseConfig
-     * @param string[] $configValidators
-     * @param ConfigBuilder|null $configBuilder
-     * @param RoutesCollectionBuilder|null $routesCollectionBuilder
-     * @throws \ReflectionException
-     */
     public function __construct(
-        ?\stdClass                $baseConfig = null,
-        array                    $configValidators = [],
-        ?ConfigBuilder           $configBuilder = null,
+        ?\stdClass $baseConfig = null,
+        array $configValidators = [],
+        ?ConfigBuilder $configBuilder = null,
         ?RoutesCollectionBuilder $routesCollectionBuilder = null,
-    )
-    {
+    ) {
         try {
             $loader = $configBuilder ?? new ConfigBuilder($baseConfig);
             if (!empty($configValidators) && !$loader->validate($configValidators)) {
@@ -62,7 +48,6 @@ class Application
             $this->initGlobalMiddlewares();
             $this->initializeRoutes($routesCollectionBuilder);
             $this->initializeStateContainer();
-
         } catch (\Exception $e) {
             error_log('Application initialization failed: ' . $e->getMessage());
             throw $e;
@@ -70,21 +55,286 @@ class Application
     }
 
     /**
-     * @param RoutesCollectionBuilder|null $routesCollectionBuilder
-     * @return void
-     * @throws \ReflectionException
+     * Создание и настройка Swoole сервера
      */
-    private function initializeRoutes(?RoutesCollectionBuilder $routesCollectionBuilder): void
-    {
+    public function createServer(string $host = "0.0.0.0", int $port = 9501): Server {
+        $this->server = new Server($host, $port, SWOOLE_PROCESS);
+
+        // Собираем все настройки сервера
+        $serverConfig = $this->buildServerConfig();
+
+        // Применяем настройки
+        $this->server->set($serverConfig);
+
+        // Регистрируем обработчики
+        $this->registerServerHandlers();
+
+        return $this->server;
+    }
+
+    /**
+     * Сборка полной конфигурации сервера
+     */
+    protected function buildServerConfig(): array {
+        $config = [];
+
+        // 1. Базовые настройки из конфига пользователя - ищем в SWOOLE (заглавными)
+        $userConfig = $this->config->getConfigFromKey('SWOOLE');
+        if (is_array($userConfig) || is_object($userConfig)) {
+            foreach ((array)$userConfig as $key => $value) {
+                $config[$key] = $value;
+            }
+        }
+
+        // 2. Устанавливаем значения по умолчанию, если не заданы
+        if (!isset($config[Constant::OPTION_WORKER_NUM])) {
+            $config[Constant::OPTION_WORKER_NUM] = swoole_cpu_num();
+        }
+
+        if (!isset($config[Constant::OPTION_TASK_WORKER_NUM])) {
+            $config[Constant::OPTION_TASK_WORKER_NUM] = swoole_cpu_num() * 10;
+        }
+
+        // 3. Добавляем dispatch функцию для DEDICATED_WORKER стратегии
+        $dispatchFunc = $this->buildDispatchFunction();
+        if ($dispatchFunc) {
+            $config['dispatch_func'] = $dispatchFunc;
+        }
+
+        return $config;
+    }
+
+    /**
+     * Создание dispatch функции для выделенного воркера
+     */
+    protected function buildDispatchFunction(): ?callable {
+        $strategy = $this->getCyclicJobsStrategy();
+
+        // Получаем количество HTTP воркеров (worker_num) из конфига SWOOLE
+        $swooleConfig = $this->config->getConfigFromKey('SWOOLE');
+        $workerNum = (int)($swooleConfig->worker_num ?? swoole_cpu_num());
+
+        // Диспатчер нужен только для DEDICATED_WORKER с минимум 2 воркерами
+        if ($strategy !== 'DEDICATED_WORKER' || $workerNum < 2) {
+            return null;
+        }
+
+        $dedicatedLoad = (float)($this->config->getConfigFromKey('cyclic_jobs.dedicated_worker_load') ?? 0.1);
+        $dedicatedLoad = max(0, min(1, $dedicatedLoad));
+
+        error_log(sprintf(
+            "[SwooleApp] Настройка диспатчера для DEDICATED_WORKER: worker 0 = %.1f%% запросов (всего HTTP воркеров: %d)",
+            $dedicatedLoad * 100,
+            $workerNum
+        ));
+
+        return function ($server, $fd, $type, $data) use ($workerNum, $dedicatedLoad) {
+            static $requestCount = 0;
+            $requestCount++;
+
+            // Используем детерминированное распределение
+            $seed = $requestCount % 1000;
+            $dedicatedThreshold = (int)($dedicatedLoad * 1000);
+
+            if ($seed < $dedicatedThreshold) {
+                return 0; // Выделенный воркер
+            }
+
+            // Распределяем остальные запросы между остальными HTTP воркерами
+            $remainingSeed = $seed - $dedicatedThreshold;
+            $otherWorkersCount = $workerNum - 1;
+
+            // Равномерное распределение между остальными HTTP воркерами
+            // ВАЖНО: возвращаем ID от 1 до workerNum-1 (только HTTP воркеры)
+            return 1 + ($remainingSeed % $otherWorkersCount);
+        };
+    }
+
+    /**
+     * Регистрация всех обработчиков сервера
+     */
+    protected function registerServerHandlers(): void {
+        if (!$this->server) {
+            throw new \RuntimeException("Server not created. Call createServer() first.");
+        }
+
+        // Обработчик старта воркера с детализацией типа
+        $this->server->on("workerStart", function (Server $server, int $workerId) {
+            // Определяем тип воркера через свойства сервера
+            $isTaskWorker = $server->taskworker;
+            $processType = $isTaskWorker ? 'task_worker' : 'worker';
+
+            echo "Process started: type={$processType}, workerId={$workerId}\n";
+
+            // Запускаем циклические задачи только для HTTP воркеров (не task)
+            if (!$isTaskWorker) {
+                $this->initCyclicJobsWithWorker($server, $workerId);
+            } else {
+                echo "Process type {$processType} - skipping cyclic jobs.\n";
+            }
+        });
+
+        // Обработчик остановки воркера
+        $this->server->on("workerStop", function (Server $server, int $workerId) {
+            $isTaskWorker = $server->taskworker;
+            $processType = $isTaskWorker ? 'task_worker' : 'worker';
+
+            echo "Process stopping: type={$processType}, workerId={$workerId}\n";
+            $this->shutdownCyclicJobs();
+        });
+
+        // Обработчик HTTP запросов
+        $this->server->on("request", function ($request, $response) {
+            $this->execute($request, $response, $this->server);
+        });
+
+        // Обработчик задач
+        $this->server->on('task', function (Server $server, $taskId, $reactorId, $data) {
+            return $this->taskExecute($server, $taskId, $reactorId, $data);
+        });
+    }
+
+    /**
+     * Получение типа воркера по ID (для информации)
+     */
+    protected function getWorkerType(int $workerId): string {
+        if (!$this->server) {
+            return 'UNKNOWN';
+        }
+        $setting = $this->server->setting;
+        $workerNum = $setting['worker_num'] ?? 0;
+        $taskWorkerNum = $setting['task_worker_num'] ?? 0;
+
+        if ($workerId < $workerNum) {
+            return 'HTTP_WORKER';
+        } elseif ($workerId < ($workerNum + $taskWorkerNum)) {
+            return 'TASK_WORKER';
+        } else {
+            return 'UNKNOWN_WORKER';
+        }
+    }
+
+    /**
+     * Логирование конфигурации воркеров
+     */
+    public function logWorkersConfiguration(): void {
+        if (!$this->server) {
+            echo "Server not initialized\n";
+            return;
+        }
+
+        $setting = $this->server->setting;
+        $workerNum = $setting['worker_num'] ?? 0;
+        $taskWorkerNum = $setting['task_worker_num'] ?? 0;
+
+        $strategy = $this->getCyclicJobsStrategy();
+        $dedicatedLoad = $this->config->getConfigFromKey('cyclic_jobs')->dedicated_worker_load ?? 0.1;
+
+        echo sprintf(
+            "\n========== Workers Configuration ==========\n" .
+            "HTTP Workers: %d (IDs: 0-%d)\n" .
+            "Task Workers: %d (IDs: %d-%d)\n" .
+            "Task Coroutine Enabled: %s\n" .
+            "Cyclic Jobs Strategy: %s\n" .
+            "%s" .
+            "==========================================\n\n",
+            $workerNum,
+            $workerNum - 1,
+            $taskWorkerNum,
+            $workerNum,
+            $workerNum + $taskWorkerNum - 1,
+            isset($setting['task_enable_coroutine']) && $setting['task_enable_coroutine'] ? 'Yes' : 'No',
+            $strategy,
+            $strategy === 'DEDICATED_WORKER' ? "Dedicated Worker Load: " . ($dedicatedLoad * 100) . "%\n" : ""
+        );
+    }
+
+    /**
+     * @deprecated 0.3.0 Будет удален в версии 0.4.0
+     */
+    public function initCyclicJobs(Server $server): void {
+        $trace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 2);
+        $caller = $trace[1] ?? null;
+
+        $errorMsg = sprintf(
+            "\n========== ОШИБКА МИГРАЦИИ SwooleApp ==========\n" .
+            "В версии 0.3.0 изменен API циклических задач.\n\n" .
+            "Было (устарело):\n" .
+            "  \$http->on(\"start\", function(\$http) use (\$app) {\n" .
+            "      \$app->initCyclicJobs(\$http);\n" .
+            "  });\n\n" .
+            "Стало (новый API):\n" .
+            "  // Создаем сервер через Application\n" .
+            "  \$http = \$app->createServer('0.0.0.0', 9501);\n" .
+            "  \$http->start();\n\n" .
+            "Все обработчики регистрируются автоматически!\n" .
+            "Место вызова: %s:%d\n" .
+            "============================================\n",
+            $caller['file'] ?? 'unknown',
+            $caller['line'] ?? 0
+        );
+
+        error_log($errorMsg);
+        throw new \RuntimeException($errorMsg);
+    }
+
+    /**
+     * Инициализация циклических задач в воркере
+     */
+    public function initCyclicJobsWithWorker(Server $server, int $workerId): void {
+        // Проверяем, что это HTTP воркер
+        if ($server->taskworker) {
+            error_log(sprintf(
+                "[Worker %d] Попытка запустить циклические задачи в task-воркере - игнорируется",
+                $workerId
+            ));
+            return;
+        }
+
+        $builder = new CyclicJobsBuilder($this->config);
+        $listCyclicJobs = $builder->buildCyclicJobs($this, $server);
+
+        if (empty($listCyclicJobs)) {
+            return;
+        }
+
+        $this->cyclicJobOrchestrator = new CyclicJobOrchestrator(
+            $listCyclicJobs,
+            $this->config,
+            $workerId,
+            $server
+        );
+
+        $this->cyclicJobOrchestrator->start();
+        unset($builder, $listCyclicJobs);
+    }
+
+    /**
+     * Остановка циклических задач
+     */
+    public function shutdownCyclicJobs(): void {
+        if ($this->cyclicJobOrchestrator) {
+            $this->cyclicJobOrchestrator->shutdown();
+        }
+    }
+
+
+    protected function getCyclicJobsStrategy(): string {
+        return strtoupper($this->config->getConfigFromKey('cyclic_jobs')->strategy ?? 'ALL_WORKERS');
+    }
+
+    /**
+     * Инициализация маршрутов
+     */
+    private function initializeRoutes(?RoutesCollectionBuilder $routesCollectionBuilder): void {
         $routeBuilder = $routesCollectionBuilder ?? new RoutesCollectionBuilder($this->config);
         $this->routesCollection = $routeBuilder->buildRoutesCollection();
     }
 
     /**
-     * @return void
+     * Инициализация контейнера состояния
      */
-    private function initializeStateContainer(): void
-    {
+    private function initializeStateContainer(): void {
         $stateContainerInit = $this->config->getConfigFromKey(ApplicationConstants::APP_STATE_CONTAINER_INITIATION_CONFIG_NAME) ?? [];
         if (empty($stateContainerInit)) {
             return;
@@ -107,11 +357,11 @@ class Application
         $this->stateContainer = new StateContainerWrapper($stateContainer);
     }
 
-
-    protected function initGlobalMiddlewares(): void
-    {
+    /**
+     * Инициализация глобальных middleware
+     */
+    protected function initGlobalMiddlewares(): void {
         $globalMiddlewaresConfig = $this->config->getConfigFromKey('globalMiddlewares');
-
         if (is_array($globalMiddlewaresConfig)) {
             foreach ($globalMiddlewaresConfig as $middlewareConfig) {
                 if (is_string($middlewareConfig)) {
@@ -130,51 +380,54 @@ class Application
     }
 
     /**
-     * @return array<array{class: string, options: array<mixed>}>
+     * Получение глобальных middleware
      */
-    public function getGlobalMiddlewares(): array
-    {
+    public function getGlobalMiddlewares(): array {
         return $this->globalMiddlewares;
     }
 
     /**
-     * @return array<int, array<mixed>>
+     * Получение коллекции маршрутов
      */
-    public function getRoutesCollection(): array
-    {
+    public function getRoutesCollection(): array {
         return $this->routesCollection;
     }
 
-    public function execute(\Swoole\Http\Request $request, \Swoole\Http\Response $response, Server $server): void
-    {
+    /**
+     * Выполнение HTTP запроса
+     */
+    public function execute(\Swoole\Http\Request $request, \Swoole\Http\Response $response, Server $server): void {
         $Route_builder = new RoutesCollectionBuilder($this->config);
         $itemRouteCollection = $Route_builder->searchInRoute($request, $this->routesCollection);
+
         if (empty($itemRouteCollection)) {
             $controller = (new NotFoundControllerBuilder($request, $response, $this->config))->build();
         } else {
             $controller = $Route_builder->getController($itemRouteCollection, $request, $response);
         }
+
         $controller->setApplication($this, $server);
-
         $response = $controller->executeWithMiddlewares();
-
         unset($controller);
     }
 
-    public function getConfig(): ConfigWrapper
-    {
+    /**
+     * Получение конфигурации
+     */
+    public function getConfig(): ConfigWrapper {
         return $this->config;
     }
 
-    public function taskExecute(\Swoole\Http\Server $server, int $taskId, int $reactorId, TaskDataInterface $data): TaskResulted
-    {
+    /**
+     * Выполнение задачи
+     */
+    public function taskExecute(\Swoole\Http\Server $server, int $taskId, int $reactorId, TaskDataInterface $data): TaskResulted {
         try {
             if (empty($data->getTaskClassName())) {
                 throw new \InvalidArgumentException('Task class name is empty');
             }
 
             $TaskExecutorClassName = $data->getTaskClassName();
-
             if (!class_exists($TaskExecutorClassName)) {
                 throw new \RuntimeException("Task executor class {$TaskExecutorClassName} not found");
             }
@@ -184,20 +437,16 @@ class Application
             }
 
             $taskExecutor = new $TaskExecutorClassName($server, $taskId, $reactorId, $data, $this);
-
             if (!$taskExecutor instanceof TaskExecutorInterface) {
                 throw new \RuntimeException("Invalid task executor instance");
             }
 
             return $taskExecutor->execute();
-
         } catch (\Throwable $e) {
-            // Логирование ошибки (можно добавить зависимость от PSR-3 LoggerInterface)
             if ($this->config->getConfigFromKey('APP_DEBUG')) {
                 error_log("Task execution failed: " . $e->getMessage());
             }
 
-            // Возвращаем подробную информацию об ошибке в debug режиме
             $errorDetails = $this->config->getConfigFromKey('APP_DEBUG')
                 ? ['message' => $e->getMessage(), 'trace' => $e->getTraceAsString()]
                 : 'Task execution failed';
@@ -206,22 +455,10 @@ class Application
         }
     }
 
-    public function initCyclicJobs(Server $server): void
-    {
-        $builder = new CyclicJobsBuilder($this->config);
-        $listCyclicJobs = $builder->buildCyclicJobs($this, $server);
-        $cyclicJobRunner = new CyclicJobRunner($listCyclicJobs);
-        $cyclicJobRunner->start();
-        unset($builder);
-        unset($listCyclicJobs);
-    }
-
     /**
-     * @return StateContainerWrapper
+     * Получение контейнера состояния
      */
-    public function getStateContainer(): StateContainerWrapper
-    {
+    public function getStateContainer(): StateContainerWrapper {
         return $this->stateContainer;
     }
-
 }
