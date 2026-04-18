@@ -5,7 +5,9 @@ namespace tests\Classes\Builder;
 use PHPUnit\Framework\TestCase;
 use Sidalex\SwooleApp\Classes\Builder\ConfigBuilder;
 use Sidalex\SwooleApp\Classes\Constants\ApplicationConstants;
+use Sidalex\SwooleApp\Classes\Dispatcher\DispatcherInterface;
 use Sidalex\SwooleApp\Classes\Validators\ConfigValidatorInterface;
+use Sidalex\SwooleApp\Application;
 
 /**
  * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder
@@ -235,6 +237,131 @@ OTHER_VAR=ignore
                 unlink($tempFile);
             }
         }
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::buildServerConfig
+     */
+    public function testBuildServerConfigWithEmptyConfig(): void
+    {
+        $builder = new ConfigBuilder();
+        $serverConfig = $builder->buildServerConfig();
+
+        $this->assertIsArray($serverConfig);
+        $this->assertArrayHasKey('worker_num', $serverConfig);
+        $this->assertArrayHasKey('task_worker_num', $serverConfig);
+        $this->assertIsInt($serverConfig['worker_num']);
+        $this->assertIsInt($serverConfig['task_worker_num']);
+        $this->assertArrayNotHasKey('dispatch_func', $serverConfig);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::buildServerConfig
+     */
+    public function testBuildServerConfigWithSwooleConfig(): void
+    {
+        $baseConfig = new \stdClass();
+        $baseConfig->SWOOLE = new \stdClass();
+        $baseConfig->SWOOLE->worker_num = 8;
+        $baseConfig->SWOOLE->task_worker_num = 16;
+        $baseConfig->SWOOLE->task_enable_coroutine = true;
+
+        $builder = new ConfigBuilder($baseConfig);
+        $serverConfig = $builder->buildServerConfig();
+
+        $this->assertSame(8, $serverConfig['worker_num']);
+        $this->assertSame(16, $serverConfig['task_worker_num']);
+        $this->assertTrue($serverConfig['task_enable_coroutine']);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::buildServerConfig
+     */
+    public function testBuildServerConfigPreservesCustomConfig(): void
+    {
+        $baseConfig = new \stdClass();
+        $baseConfig->SWOOLE = new \stdClass();
+        $baseConfig->SWOOLE->worker_num = 4;
+        $baseConfig->SWOOLE->log_file = '/var/log/swoole.log';
+        $baseConfig->SWOOLE->daemonize = true;
+
+        $builder = new ConfigBuilder($baseConfig);
+        $serverConfig = $builder->buildServerConfig();
+
+        $this->assertSame(4, $serverConfig['worker_num']);
+        $this->assertSame('/var/log/swoole.log', $serverConfig['log_file']);
+        $this->assertTrue($serverConfig['daemonize']);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::buildServerConfig
+     */
+    public function testBuildServerConfigWithDispatcher(): void
+    {
+        $dispatcher = $this->createMock(DispatcherInterface::class);
+
+        $builder = new ConfigBuilder();
+        $serverConfig = $builder->buildServerConfig($dispatcher);
+
+        $this->assertArrayNotHasKey('dispatch_func', $serverConfig);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::getCyclicJobsStrategy
+     */
+    public function testGetCyclicJobsStrategyDefault(): void
+    {
+        $builder = new ConfigBuilder();
+        $strategy = $builder->getCyclicJobsStrategy();
+
+        $this->assertSame('ALL_WORKERS', $strategy);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::getCyclicJobsStrategy
+     */
+    public function testGetCyclicJobsStrategyFromConfig(): void
+    {
+        $baseConfig = new \stdClass();
+        $baseConfig->cyclic_jobs = new \stdClass();
+        $baseConfig->cyclic_jobs->strategy = 'DEDICATED_WORKER';
+
+        $builder = new ConfigBuilder($baseConfig);
+        $strategy = $builder->getCyclicJobsStrategy();
+
+        $this->assertSame('DEDICATED_WORKER', $strategy);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::getCyclicJobsStrategy
+     */
+    public function testGetCyclicJobsStrategyCaseInsensitive(): void
+    {
+        $baseConfig = new \stdClass();
+        $baseConfig->cyclic_jobs = new \stdClass();
+        $baseConfig->cyclic_jobs->strategy = 'round_robin';
+
+        $builder = new ConfigBuilder($baseConfig);
+        $strategy = $builder->getCyclicJobsStrategy();
+
+        $this->assertSame('ROUND_ROBIN', $strategy);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::buildServerConfig
+     */
+    public function testBuildServerConfigDefaultsAreAppliedWhenNotSet(): void
+    {
+        $baseConfig = new \stdClass();
+        $baseConfig->SWOOLE = new \stdClass();
+        $baseConfig->SWOOLE->log_file = '/tmp/swoole.log';
+
+        $builder = new ConfigBuilder($baseConfig);
+        $serverConfig = $builder->buildServerConfig();
+
+        $this->assertSame('/tmp/swoole.log', $serverConfig['log_file']);
+        $this->assertArrayHasKey('worker_num', $serverConfig);
+        $this->assertArrayHasKey('task_worker_num', $serverConfig);
     }
 }
 

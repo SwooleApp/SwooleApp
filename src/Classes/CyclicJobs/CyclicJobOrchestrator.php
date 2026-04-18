@@ -7,14 +7,22 @@ use Sidalex\SwooleApp\Classes\Wrapper\ConfigWrapper;
 use Swoole\Coroutine;
 use Swoole\Http\Server;
 
-class CyclicJobOrchestrator
-{
+class CyclicJobOrchestrator {
+    /**
+     * @var CyclicJobsInterface[]
+     */
     private array $jobs;
     private ConfigWrapper $config;
     private int $workerId;
     private Server $server;
+    /**
+     * @var int[]
+     */
     private array $runningJobs = [];
     private bool $shuttingDown = false;
+    /**
+     * @var array<int|string, mixed>
+     */
     private array $jobStats = [];
     private bool $isTaskWorker;
     private string $workerType;
@@ -22,8 +30,10 @@ class CyclicJobOrchestrator
     private const DEFAULT_MONITORING_INTERVAL = 60;
     private const ERROR_RETRY_DELAY = 5;
 
-    public function __construct(array $jobs, ConfigWrapper $config, int $workerId, Server $server)
-    {
+    /**
+     * @param CyclicJobsInterface[] $jobs
+     */
+    public function __construct(array $jobs, ConfigWrapper $config, int $workerId, Server $server) {
         $this->jobs = $jobs;
         $this->config = $config;
         $this->workerId = $workerId;
@@ -35,8 +45,7 @@ class CyclicJobOrchestrator
     /**
      * Запуск циклических задач
      */
-    public function start(): void
-    {
+    public function start(): void {
         // Критическая проверка: НЕ запускаем в task-воркерах
         if ($this->isTaskWorker) {
             error_log(sprintf(
@@ -61,13 +70,12 @@ class CyclicJobOrchestrator
             }
         }
 
-        error_log(sprintf(
-            "[Worker %d][http_worker] Запущено циклических задач: %d",
-            $this->workerId,
-            $jobsStarted
-        ));
-
         if ($jobsStarted > 0) {
+            error_log(sprintf(
+                "[Worker %d][http_worker] Запущено циклических задач: %d",
+                $this->workerId,
+                $jobsStarted
+            ));
             $this->startMonitoring();
         }
     }
@@ -75,8 +83,7 @@ class CyclicJobOrchestrator
     /**
      * Логирование информации о стратегии
      */
-    private function logStrategyInfo(CyclicJobsDistributionStrategy $strategy, int $totalWorkers): void
-    {
+    private function logStrategyInfo(CyclicJobsDistributionStrategy $strategy, int $totalWorkers): void {
         $strategyName = match ($strategy) {
             CyclicJobsDistributionStrategy::ALL_WORKERS => 'ALL_WORKERS',
             CyclicJobsDistributionStrategy::DEDICATED_WORKER => 'DEDICATED_WORKER',
@@ -92,10 +99,9 @@ class CyclicJobOrchestrator
 
         if ($strategy === CyclicJobsDistributionStrategy::DEDICATED_WORKER) {
             if ($this->workerId === 0) {
-                $dedicatedLoad = $this->config->getConfigFromKey('cyclic_jobs.dedicated_worker_load') ?? 0.1;
-                $logMsg .= sprintf(", ВЫДЕЛЕННЫЙ ВОРКЕР (нагрузка: %.1f%%)", $dedicatedLoad * 100);
+                $logMsg .= " - ВЫДЕЛЕННЫЙ ВОРКЕР (только циклические задачи, HTTP запросы не обрабатывает)";
             } else {
-                $logMsg .= " - задачи не запускаются (только worker 0)";
+                $logMsg .= " - HTTP воркер для запросов";
             }
         }
 
@@ -107,10 +113,9 @@ class CyclicJobOrchestrator
      */
     private function shouldRunJob(
         CyclicJobsDistributionStrategy $strategy,
-        int                            $jobIndex,
-        int                            $totalWorkers
-    ): bool
-    {
+        int $jobIndex,
+        int $totalWorkers
+    ): bool {
         // Всегда проверяем, что это не task воркер
         if ($this->isTaskWorker) {
             return false;
@@ -130,8 +135,7 @@ class CyclicJobOrchestrator
     /**
      * Запуск одной циклической задачи
      */
-    private function startJob(CyclicJobsInterface $job, int $index): void
-    {
+    private function startJob(CyclicJobsInterface $job, int $index): void {
         $jobClass = get_class($job);
 
         $this->jobStats[$index] = [
@@ -165,15 +169,6 @@ class CyclicJobOrchestrator
                     $this->jobStats[$index]['last_run'] = time();
                     $this->jobStats[$index]['last_duration'] = microtime(true) - $startTime;
 
-                    if ($this->config->getConfigFromKey('APP_DEBUG')) {
-                        error_log(sprintf(
-                            "[Worker %d][http_worker] Job %s выполнен за %.4fс",
-                            $this->workerId,
-                            $jobClass,
-                            microtime(true) - $startTime
-                        ));
-                    }
-
                     $this->sleepWithInterrupt($job->getTimeSleepSecond());
 
                 } catch (\Throwable $e) {
@@ -195,8 +190,7 @@ class CyclicJobOrchestrator
     /**
      * Обработка ошибки задачи
      */
-    private function handleJobError(\Throwable $e, string $jobClass, int $index): void
-    {
+    private function handleJobError(\Throwable $e, string $jobClass, int $index): void {
         $errorMsg = sprintf(
             "[Worker %d][http_worker] Cyclic job %s failed: %s\n%s",
             $this->workerId,
@@ -216,8 +210,7 @@ class CyclicJobOrchestrator
     /**
      * Сон с возможностью прерывания
      */
-    private function sleepWithInterrupt(float $seconds): void
-    {
+    private function sleepWithInterrupt(float $seconds): void {
         $chunks = (int)ceil($seconds);
         for ($i = 0; $i < $chunks; $i++) {
             if ($this->shuttingDown) {
@@ -230,8 +223,7 @@ class CyclicJobOrchestrator
     /**
      * Запуск мониторинга задач
      */
-    private function startMonitoring(): void
-    {
+    private function startMonitoring(): void {
         $interval = (int)$this->config->getConfigFromKey('cyclic_jobs.monitoring_interval')
             ?: self::DEFAULT_MONITORING_INTERVAL;
 
@@ -250,8 +242,7 @@ class CyclicJobOrchestrator
     /**
      * Проверка здоровья задач
      */
-    private function checkJobsHealth(): void
-    {
+    private function checkJobsHealth(): void {
         foreach ($this->runningJobs as $index => $cid) {
             if (!Coroutine::exists($cid)) {
                 error_log(sprintf(
@@ -272,8 +263,7 @@ class CyclicJobOrchestrator
     /**
      * Логирование статистики
      */
-    private function logStats(): void
-    {
+    private function logStats(): void {
         $stats = [
             'worker' => $this->workerId,
             'worker_type' => $this->workerType,
@@ -291,8 +281,7 @@ class CyclicJobOrchestrator
     /**
      * Остановка всех задач
      */
-    public function shutdown(): void
-    {
+    public function shutdown(): void {
         $this->shuttingDown = true;
 
         $start = time();
@@ -313,18 +302,27 @@ class CyclicJobOrchestrator
     /**
      * Получение стратегии распределения
      */
-    private function getDistributionStrategy(): CyclicJobsDistributionStrategy
-    {
-        $strategy = strtoupper($this->config->getConfigFromKey('cyclic_jobs')->strategy ?? 'ALL_WORKERS');
+    private function getDistributionStrategy(): CyclicJobsDistributionStrategy {
+        // 1. Проверяем переменную окружения
+        $envStrategy = getenv('SWOOLE_APP_CYCLIC_JOBS_STRATEGY');
+        if ($envStrategy !== false && !empty($envStrategy)) {
+            return $this->matchStrategy($envStrategy);
+        }
 
-        return $this->matchStrategy($strategy);
+        // 2. Проверяем конфиг
+        $cyclicJobsConfig = $this->config->getConfigFromKey('cyclic_jobs');
+        if ($cyclicJobsConfig && isset($cyclicJobsConfig->strategy)) {
+            return $this->matchStrategy($cyclicJobsConfig->strategy);
+        }
+
+        // 3. По умолчанию
+        return CyclicJobsDistributionStrategy::ALL_WORKERS;
     }
 
     /**
      * Преобразование строки в стратегию
      */
-    private function matchStrategy(string $strategy): CyclicJobsDistributionStrategy
-    {
+    private function matchStrategy(string $strategy): CyclicJobsDistributionStrategy {
         return match (strtoupper(trim($strategy))) {
             'DEDICATED_WORKER' => CyclicJobsDistributionStrategy::DEDICATED_WORKER,
             'ROUND_ROBIN' => CyclicJobsDistributionStrategy::ROUND_ROBIN,
@@ -333,10 +331,9 @@ class CyclicJobOrchestrator
     }
 
     /**
-     * Получение информации о процессе
+     * @return array{worker_id: int, worker_type: string, is_task_worker: bool, is_http_worker: bool}
      */
-    public function getProcessInfo(): array
-    {
+    public function getProcessInfo(): array {
         return [
             'worker_id' => $this->workerId,
             'worker_type' => $this->workerType,

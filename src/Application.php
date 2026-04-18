@@ -11,6 +11,7 @@ use Sidalex\SwooleApp\Classes\Builder\NotFoundControllerBuilder;
 use Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder;
 use Sidalex\SwooleApp\Classes\CyclicJobs\CyclicJobsBuilder;
 use Sidalex\SwooleApp\Classes\CyclicJobs\CyclicJobOrchestrator;
+use Sidalex\SwooleApp\Classes\Dispatcher\DispatcherInterface;
 use Sidalex\SwooleApp\Classes\Initiation\StateContainerInitiationInterface;
 use Sidalex\SwooleApp\Classes\Tasks\Data\TaskDataInterface;
 use Sidalex\SwooleApp\Classes\Tasks\TaskResulted;
@@ -19,16 +20,31 @@ use Sidalex\SwooleApp\Classes\Wrapper\ConfigWrapper;
 use Sidalex\SwooleApp\Classes\Wrapper\StateContainerWrapper;
 use Swoole\Coroutine;
 use Swoole\Http\Server;
-use Swoole\Constant;
 
 class Application {
     protected ConfigWrapper $config;
+    protected ConfigBuilder $configBuilder;
+    /**
+     * @var array<mixed>
+     */
     protected array $routesCollection;
     protected StateContainerWrapper $stateContainer;
+
+    /**
+     * @var array<array{class: string, options: array<mixed>}>
+     */
     protected array $globalMiddlewares = [];
     protected ?CyclicJobOrchestrator $cyclicJobOrchestrator = null;
     protected ?Server $server = null;
+    protected ?DispatcherInterface $dispatcher = null;
 
+    /**
+     * @param \stdClass|null $baseConfig
+     * @param string[] $configValidators
+     * @param ConfigBuilder|null $configBuilder
+     * @param RoutesCollectionBuilder|null $routesCollectionBuilder
+     * @throws \ReflectionException
+     */
     public function __construct(
         ?\stdClass $baseConfig = null,
         array $configValidators = [],
@@ -36,22 +52,46 @@ class Application {
         ?RoutesCollectionBuilder $routesCollectionBuilder = null,
     ) {
         try {
-            $loader = $configBuilder ?? new ConfigBuilder($baseConfig);
-            if (!empty($configValidators) && !$loader->validate($configValidators)) {
+            $this->configBuilder = $configBuilder ?? new ConfigBuilder($baseConfig);
+            if (!empty($configValidators) && !$this->configBuilder->validate($configValidators)) {
                 throw new \RuntimeException(
                     "Configuration validation failed:\n" .
-                    implode("\n", $loader->getErrors())
+                    implode("\n", $this->configBuilder->getErrors())
                 );
             }
 
-            $this->config = new ConfigWrapper($loader->getConfig());
+            $this->config = new ConfigWrapper($this->configBuilder->getConfig());
             $this->initGlobalMiddlewares();
             $this->initializeRoutes($routesCollectionBuilder);
             $this->initializeStateContainer();
+            $this->initializeWorkerDispatcher();
         } catch (\Exception $e) {
             error_log('Application initialization failed: ' . $e->getMessage());
             throw $e;
         }
+    }
+
+    protected function initializeWorkerDispatcher(): void {
+        $dispatcherClass = $this->config->getConfigFromKey('DISPATCHER');
+
+        if (empty($dispatcherClass)) {
+            return;
+        }
+
+        if (!class_exists($dispatcherClass)) {
+            error_log("[SwooleApp] Класс диспатчера {$dispatcherClass} не найден");
+            return;
+        }
+
+        $dispatcherInstance = new $dispatcherClass();
+
+        if (!$dispatcherInstance instanceof DispatcherInterface) {
+            error_log("[SwooleApp] Класс {$dispatcherClass} должен реализовать DispatcherInterface");
+            return;
+        }
+
+        $this->dispatcher = $dispatcherInstance;
+        error_log("[SwooleApp] Загружен пользовательский диспатчер: {$dispatcherClass}");
     }
 
     /**
@@ -60,94 +100,11 @@ class Application {
     public function createServer(string $host = "0.0.0.0", int $port = 9501): Server {
         $this->server = new Server($host, $port, SWOOLE_PROCESS);
 
-        // Собираем все настройки сервера
-        $serverConfig = $this->buildServerConfig();
+        $this->server->set($this->configBuilder->buildServerConfig($this->dispatcher));
 
-        // Применяем настройки
-        $this->server->set($serverConfig);
-
-        // Регистрируем обработчики
         $this->registerServerHandlers();
 
         return $this->server;
-    }
-
-    /**
-     * Сборка полной конфигурации сервера
-     */
-    protected function buildServerConfig(): array {
-        $config = [];
-
-        // 1. Базовые настройки из конфига пользователя - ищем в SWOOLE (заглавными)
-        $userConfig = $this->config->getConfigFromKey('SWOOLE');
-        if (is_array($userConfig) || is_object($userConfig)) {
-            foreach ((array)$userConfig as $key => $value) {
-                $config[$key] = $value;
-            }
-        }
-
-        // 2. Устанавливаем значения по умолчанию, если не заданы
-        if (!isset($config[Constant::OPTION_WORKER_NUM])) {
-            $config[Constant::OPTION_WORKER_NUM] = swoole_cpu_num();
-        }
-
-        if (!isset($config[Constant::OPTION_TASK_WORKER_NUM])) {
-            $config[Constant::OPTION_TASK_WORKER_NUM] = swoole_cpu_num() * 10;
-        }
-
-        // 3. Добавляем dispatch функцию для DEDICATED_WORKER стратегии
-        $dispatchFunc = $this->buildDispatchFunction();
-        if ($dispatchFunc) {
-            $config['dispatch_func'] = $dispatchFunc;
-        }
-
-        return $config;
-    }
-
-    /**
-     * Создание dispatch функции для выделенного воркера
-     */
-    protected function buildDispatchFunction(): ?callable {
-        $strategy = $this->getCyclicJobsStrategy();
-
-        // Получаем количество HTTP воркеров (worker_num) из конфига SWOOLE
-        $swooleConfig = $this->config->getConfigFromKey('SWOOLE');
-        $workerNum = (int)($swooleConfig->worker_num ?? swoole_cpu_num());
-
-        // Диспатчер нужен только для DEDICATED_WORKER с минимум 2 воркерами
-        if ($strategy !== 'DEDICATED_WORKER' || $workerNum < 2) {
-            return null;
-        }
-
-        $dedicatedLoad = (float)($this->config->getConfigFromKey('cyclic_jobs.dedicated_worker_load') ?? 0.1);
-        $dedicatedLoad = max(0, min(1, $dedicatedLoad));
-
-        error_log(sprintf(
-            "[SwooleApp] Настройка диспатчера для DEDICATED_WORKER: worker 0 = %.1f%% запросов (всего HTTP воркеров: %d)",
-            $dedicatedLoad * 100,
-            $workerNum
-        ));
-
-        return function ($server, $fd, $type, $data) use ($workerNum, $dedicatedLoad) {
-            static $requestCount = 0;
-            $requestCount++;
-
-            // Используем детерминированное распределение
-            $seed = $requestCount % 1000;
-            $dedicatedThreshold = (int)($dedicatedLoad * 1000);
-
-            if ($seed < $dedicatedThreshold) {
-                return 0; // Выделенный воркер
-            }
-
-            // Распределяем остальные запросы между остальными HTTP воркерами
-            $remainingSeed = $seed - $dedicatedThreshold;
-            $otherWorkersCount = $workerNum - 1;
-
-            // Равномерное распределение между остальными HTTP воркерами
-            // ВАЖНО: возвращаем ID от 1 до workerNum-1 (только HTTP воркеры)
-            return 1 + ($remainingSeed % $otherWorkersCount);
-        };
     }
 
     /**
@@ -194,60 +151,7 @@ class Application {
         });
     }
 
-    /**
-     * Получение типа воркера по ID (для информации)
-     */
-    protected function getWorkerType(int $workerId): string {
-        if (!$this->server) {
-            return 'UNKNOWN';
-        }
-        $setting = $this->server->setting;
-        $workerNum = $setting['worker_num'] ?? 0;
-        $taskWorkerNum = $setting['task_worker_num'] ?? 0;
 
-        if ($workerId < $workerNum) {
-            return 'HTTP_WORKER';
-        } elseif ($workerId < ($workerNum + $taskWorkerNum)) {
-            return 'TASK_WORKER';
-        } else {
-            return 'UNKNOWN_WORKER';
-        }
-    }
-
-    /**
-     * Логирование конфигурации воркеров
-     */
-    public function logWorkersConfiguration(): void {
-        if (!$this->server) {
-            echo "Server not initialized\n";
-            return;
-        }
-
-        $setting = $this->server->setting;
-        $workerNum = $setting['worker_num'] ?? 0;
-        $taskWorkerNum = $setting['task_worker_num'] ?? 0;
-
-        $strategy = $this->getCyclicJobsStrategy();
-        $dedicatedLoad = $this->config->getConfigFromKey('cyclic_jobs')->dedicated_worker_load ?? 0.1;
-
-        echo sprintf(
-            "\n========== Workers Configuration ==========\n" .
-            "HTTP Workers: %d (IDs: 0-%d)\n" .
-            "Task Workers: %d (IDs: %d-%d)\n" .
-            "Task Coroutine Enabled: %s\n" .
-            "Cyclic Jobs Strategy: %s\n" .
-            "%s" .
-            "==========================================\n\n",
-            $workerNum,
-            $workerNum - 1,
-            $taskWorkerNum,
-            $workerNum,
-            $workerNum + $taskWorkerNum - 1,
-            isset($setting['task_enable_coroutine']) && $setting['task_enable_coroutine'] ? 'Yes' : 'No',
-            $strategy,
-            $strategy === 'DEDICATED_WORKER' ? "Dedicated Worker Load: " . ($dedicatedLoad * 100) . "%\n" : ""
-        );
-    }
 
     /**
      * @deprecated 0.3.0 Будет удален в версии 0.4.0
@@ -318,11 +222,6 @@ class Application {
         }
     }
 
-
-    protected function getCyclicJobsStrategy(): string {
-        return strtoupper($this->config->getConfigFromKey('cyclic_jobs')->strategy ?? 'ALL_WORKERS');
-    }
-
     /**
      * Инициализация маршрутов
      */
@@ -380,14 +279,14 @@ class Application {
     }
 
     /**
-     * Получение глобальных middleware
+     * @return array<array{class: string, options: array<mixed>}>
      */
     public function getGlobalMiddlewares(): array {
         return $this->globalMiddlewares;
     }
 
     /**
-     * Получение коллекции маршрутов
+     * @return array<mixed>
      */
     public function getRoutesCollection(): array {
         return $this->routesCollection;

@@ -2,6 +2,7 @@
 namespace Sidalex\SwooleApp\Classes\Builder;
 
 use Sidalex\SwooleApp\Classes\Constants\ApplicationConstants;
+use Sidalex\SwooleApp\Classes\Dispatcher\DispatcherInterface;
 use Sidalex\SwooleApp\Classes\Validators\ConfigValidatorInterface;
 
 class ConfigBuilder {
@@ -154,5 +155,89 @@ class ConfigBuilder {
         }
 
         return $value;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function buildServerConfig(?DispatcherInterface $dispatcher = null): array {
+        $config = [];
+
+        $swooleConfig = $this->config->SWOOLE ?? null;
+        if (is_array($swooleConfig) || is_object($swooleConfig)) {
+            foreach ((array)$swooleConfig as $key => $value) {
+                $config[$key] = $value;
+            }
+        }
+
+        if (!isset($config['worker_num'])) {
+            $config['worker_num'] = \swoole_cpu_num();
+        }
+
+        if (!isset($config['task_worker_num'])) {
+            $config['task_worker_num'] = \swoole_cpu_num() * 10;
+        }
+
+        $dispatchFunc = $this->buildDispatchFunction($dispatcher);
+        if ($dispatchFunc !== null) {
+            $config['dispatch_func'] = $dispatchFunc;
+        }
+
+        return $config;
+    }
+
+    private function buildDispatchFunction(?DispatcherInterface $dispatcher): ?callable {
+        if ($dispatcher !== null) {
+            error_log("[SwooleApp] Установлена пользовательская dispatch функция из " . get_class($dispatcher));
+            return null;
+        }
+
+        return $this->buildDefaultDispatchFunction();
+    }
+
+    private function buildDefaultDispatchFunction(): ?callable {
+        $strategy = $this->getCyclicJobsStrategy();
+
+        $swooleConfig = $this->config->SWOOLE ?? new \stdClass();
+        $workerNum = (int)($swooleConfig->worker_num ?? \swoole_cpu_num());
+
+        if ($strategy !== 'DEDICATED_WORKER') {
+            return null;
+        }
+
+        if ($workerNum < 2) {
+            error_log("[SwooleApp] DEDICATED_WORKER требует минимум 2 воркера, используется стандартный диспатчер");
+            return null;
+        }
+
+        error_log(sprintf(
+            "[SwooleApp] Настройка диспатчера для DEDICATED_WORKER: worker 0 НЕ получает запросы, " .
+            "запросы распределяются между воркерами 1-%d",
+            $workerNum - 1
+        ));
+
+        return function ($server, $fd, $type, $data) use ($workerNum) {
+            static $requestCount = 0;
+            $requestCount++;
+
+            $seed = $requestCount % 1000;
+            $otherWorkersCount = $workerNum - 1;
+
+            return 1 + ($seed % $otherWorkersCount);
+        };
+    }
+
+    public function getCyclicJobsStrategy(): string {
+        $envStrategy = getenv('SWOOLE_APP_CYCLIC_JOBS_STRATEGY');
+        if ($envStrategy !== false && $envStrategy !== '') {
+            return strtoupper(trim($envStrategy));
+        }
+
+        $cyclicJobs = $this->config->cyclic_jobs ?? null;
+        if ($cyclicJobs !== null && isset($cyclicJobs->strategy)) {
+            return strtoupper(trim($cyclicJobs->strategy));
+        }
+
+        return 'ALL_WORKERS';
     }
 }
