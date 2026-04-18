@@ -16,6 +16,7 @@ class ConfigBuilder {
      */
     protected array $envVariables;
     protected string $envFilePath;
+    protected bool $dotEnvLoaded = false;
 
     /**
      * @param \stdClass|null $baseConfig
@@ -64,28 +65,34 @@ class ConfigBuilder {
 
     protected function loadEnvConfig(): void {
         $this->loadDotEnv();
-        foreach ($this->envVariables as $key => $value) {
-            if (str_starts_with($key, ApplicationConstants::APP_ENV_PREFIX)) {
-                $this->processConfigKey($key, $value);
-            }
-        }
     }
 
     protected function loadDotEnv(): void {
-        if (!file_exists($this->envFilePath)) {
+        if ($this->dotEnvLoaded) {
             return;
         }
 
-        $lines = file($this->envFilePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        if($lines !== false) {
-            foreach ($lines as $line) {
-                if (strpos($line, '=') !== false && !str_starts_with(trim($line), '#')) {
-                    list($key, $value) = explode('=', $line, 2);
-                    $key = trim($key);
-                    if (str_starts_with($key, ApplicationConstants::APP_ENV_PREFIX)) {
-                        $this->envVariables[$key] = $this->parseValue($value);
+        if (file_exists($this->envFilePath)) {
+            $lines = file($this->envFilePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            if ($lines !== false) {
+                foreach ($lines as $line) {
+                    if (strpos($line, '=') !== false && !str_starts_with(trim($line), '#')) {
+                        list($key, $value) = explode('=', $line, 2);
+                        $key = trim($key);
+                        if (str_starts_with($key, ApplicationConstants::APP_ENV_PREFIX)) {
+                            $this->envVariables[$key] = $value;
+                        }
                     }
                 }
+            }
+        }
+
+        $this->dotEnvLoaded = true;
+
+        foreach ($this->envVariables as $key => $value) {
+            if (str_starts_with($key, ApplicationConstants::APP_ENV_PREFIX)) {
+                $parsedValue = $this->parseValue($value);
+                $this->processConfigKey($key, $parsedValue);
             }
         }
     }
@@ -99,38 +106,55 @@ class ConfigBuilder {
         $path = substr($key, strlen(ApplicationConstants::APP_ENV_PREFIX));
         $parts = explode('__', $path);
         $current = &$this->config;
+        $refs = [&$current];
 
         foreach ($parts as $i => $part) {
             if ($i === count($parts) - 1) {
-                $this->setFinalValue($current, $part, $value);
+                $this->setFinalValue($refs, $part, $value);
+                return;
+            }
+
+            if (is_numeric($part)) {
+                if (!is_array($current)) {
+                    $current = [];
+                }
+                if (!isset($current[$part])) {
+                    $current[$part] = new \stdClass();
+                }
+                $current = &$current[$part];
             } else {
+                if (!is_object($current)) {
+                    $current = new \stdClass();
+                }
                 if (!isset($current->$part)) {
                     $current->$part = new \stdClass();
                 }
                 $current = &$current->$part;
             }
+            $refs[] = &$current;
         }
     }
 
     /**
-     * @param mixed $current
+     * @param array<int, mixed> $refs
      * @param string $part
      * @param mixed $value
      * @return void
      */
-    protected function setFinalValue(mixed &$current, string $part, mixed $value): void {
-        $parsedValue = $this->parseValue($value);
+    protected function setFinalValue(array &$refs, string $part, mixed $value): void {
+        $lastIndex = count($refs) - 1;
+        $current = &$refs[$lastIndex];
 
         if (is_numeric($part)) {
             if (!is_array($current)) {
                 $current = [];
             }
-            $current[$part] = $parsedValue;
+            $current[$part] = $value;
         } else {
             if (!is_object($current)) {
                 $current = new \stdClass();
             }
-            $current->$part = $parsedValue;
+            $current->$part = $value;
         }
     }
 
@@ -164,8 +188,12 @@ class ConfigBuilder {
         $config = [];
 
         $swooleConfig = $this->config->SWOOLE ?? null;
-        if (is_array($swooleConfig) || is_object($swooleConfig)) {
-            foreach ((array)$swooleConfig as $key => $value) {
+        if (is_array($swooleConfig)) {
+            foreach ($swooleConfig as $key => $value) {
+                $config[$key] = $value;
+            }
+        } elseif (is_object($swooleConfig)) {
+            foreach (get_object_vars($swooleConfig) as $key => $value) {
                 $config[$key] = $value;
             }
         }
@@ -178,21 +206,12 @@ class ConfigBuilder {
             $config['task_worker_num'] = \swoole_cpu_num() * 10;
         }
 
-        $dispatchFunc = $this->buildDispatchFunction($dispatcher);
+        $dispatchFunc = $this->buildDefaultDispatchFunction();
         if ($dispatchFunc !== null) {
             $config['dispatch_func'] = $dispatchFunc;
         }
 
         return $config;
-    }
-
-    private function buildDispatchFunction(?DispatcherInterface $dispatcher): ?callable {
-        if ($dispatcher !== null) {
-            error_log("[SwooleApp] Установлена пользовательская dispatch функция из " . get_class($dispatcher));
-            return null;
-        }
-
-        return $this->buildDefaultDispatchFunction();
     }
 
     private function buildDefaultDispatchFunction(): ?callable {
@@ -228,8 +247,8 @@ class ConfigBuilder {
     }
 
     public function getCyclicJobsStrategy(): string {
-        $envStrategy = getenv('SWOOLE_APP_CYCLIC_JOBS_STRATEGY');
-        if ($envStrategy !== false && $envStrategy !== '') {
+        $envStrategy = $this->envVariables['SWOOLE_APP_CYCLIC_JOBS_STRATEGY'] ?? null;
+        if ($envStrategy !== null && $envStrategy !== '') {
             return strtoupper(trim($envStrategy));
         }
 
@@ -239,5 +258,64 @@ class ConfigBuilder {
         }
 
         return 'ALL_WORKERS';
+    }
+
+    /**
+     * @param string $envKey
+     * @param string $configPath
+     * @param mixed $defaultValue
+     * @return mixed
+     */
+    private function getConfigValue(string $envKey, string $configPath, mixed $defaultValue): mixed {
+        $envValue = $this->envVariables[$envKey] ?? null;
+        if ($envValue !== null && $envValue !== '') {
+            return $this->parseValue($envValue);
+        }
+
+        $parts = explode('->', $configPath);
+        $current = $this->config;
+        foreach ($parts as $part) {
+            if (!is_object($current) || !isset($current->$part)) {
+                return $defaultValue;
+            }
+            $current = $current->$part;
+        }
+
+        if ($current !== null && $current !== '') {
+            return $this->parseValue($current);
+        }
+
+        return $defaultValue;
+    }
+
+    public function getServerHost(): string {
+        return (string) $this->getConfigValue(
+            'SWOOLE_APP_SERVER_HOST',
+            'server->host',
+            '0.0.0.0'
+        );
+    }
+
+    public function getServerPort(): int {
+        return (int) $this->getConfigValue(
+            'SWOOLE_APP_SERVER_PORT',
+            'server->port',
+            9501
+        );
+    }
+
+    public function getServerMode(): int {
+        $value = $this->getConfigValue(
+            'SWOOLE_APP_SERVER_MODE',
+            'server->mode',
+            'PROCESS'
+        );
+
+        $mode = strtoupper(trim($value));
+        if ($mode === 'BASE') {
+            return SWOOLE_BASE;
+        }
+
+        return SWOOLE_PROCESS;
     }
 }

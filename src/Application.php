@@ -97,8 +97,12 @@ class Application {
     /**
      * Создание и настройка Swoole сервера
      */
-    public function createServer(string $host = "0.0.0.0", int $port = 9501): Server {
-        $this->server = new Server($host, $port, SWOOLE_PROCESS);
+    public function createServer(?string $host = null, ?int $port = null): Server {
+        $host = $host ?? $this->configBuilder->getServerHost();
+        $port = $port ?? $this->configBuilder->getServerPort();
+        $mode = $this->configBuilder->getServerMode();
+
+        $this->server = new Server($host, $port, $mode);
 
         $this->server->set($this->configBuilder->buildServerConfig($this->dispatcher));
 

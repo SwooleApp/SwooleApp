@@ -363,6 +363,159 @@ OTHER_VAR=ignore
         $this->assertArrayHasKey('worker_num', $serverConfig);
         $this->assertArrayHasKey('task_worker_num', $serverConfig);
     }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::getServerHost
+     */
+    public function testGetServerHostDefault(): void
+    {
+        $builder = new ConfigBuilder();
+        $host = $builder->getServerHost();
+
+        $this->assertSame('0.0.0.0', $host);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::getServerHost
+     */
+    public function testGetServerHostFromEnv(): void
+    {
+        $envVariables = [
+            ApplicationConstants::APP_ENV_PREFIX . 'SERVER_HOST' => '127.0.0.1'
+        ];
+
+        $builder = new ConfigBuilder(null, $envVariables);
+        $host = $builder->getServerHost();
+
+        $this->assertSame('127.0.0.1', $host);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::getServerHost
+     */
+    public function testGetServerHostFromConfig(): void
+    {
+        $baseConfig = new \stdClass();
+        $baseConfig->server = new \stdClass();
+        $baseConfig->server->host = 'localhost';
+
+        $builder = new ConfigBuilder($baseConfig);
+        $host = $builder->getServerHost();
+
+        $this->assertSame('localhost', $host);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::getServerPort
+     */
+    public function testGetServerPortDefault(): void
+    {
+        $builder = new ConfigBuilder();
+        $port = $builder->getServerPort();
+
+        $this->assertSame(9501, $port);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::getServerPort
+     */
+    public function testGetServerPortFromEnv(): void
+    {
+        $envVariables = [
+            ApplicationConstants::APP_ENV_PREFIX . 'SERVER_PORT' => '8080'
+        ];
+
+        $builder = new ConfigBuilder(null, $envVariables);
+        $port = $builder->getServerPort();
+
+        $this->assertSame(8080, $port);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::getServerPort
+     */
+    public function testGetServerPortFromConfig(): void
+    {
+        $baseConfig = new \stdClass();
+        $baseConfig->server = new \stdClass();
+        $baseConfig->server->port = 3000;
+
+        $builder = new ConfigBuilder($baseConfig);
+        $port = $builder->getServerPort();
+
+        $this->assertSame(3000, $port);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::getServerMode
+     */
+    public function testGetServerModeDefault(): void
+    {
+        $builder = new ConfigBuilder();
+        $mode = $builder->getServerMode();
+
+        $this->assertSame(SWOOLE_PROCESS, $mode);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::getServerMode
+     */
+    public function testGetServerModeBaseFromEnv(): void
+    {
+        $envVariables = [
+            ApplicationConstants::APP_ENV_PREFIX . 'SERVER_MODE' => 'BASE'
+        ];
+
+        $builder = new ConfigBuilder(null, $envVariables);
+        $mode = $builder->getServerMode();
+
+        $this->assertSame(SWOOLE_BASE, $mode);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::getServerMode
+     */
+    public function testGetServerModeProcessFromEnv(): void
+    {
+        $envVariables = [
+            ApplicationConstants::APP_ENV_PREFIX . 'SERVER_MODE' => 'PROCESS'
+        ];
+
+        $builder = new ConfigBuilder(null, $envVariables);
+        $mode = $builder->getServerMode();
+
+        $this->assertSame(SWOOLE_PROCESS, $mode);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::getServerMode
+     */
+    public function testGetServerModeBaseFromConfig(): void
+    {
+        $baseConfig = new \stdClass();
+        $baseConfig->server = new \stdClass();
+        $baseConfig->server->mode = 'BASE';
+
+        $builder = new ConfigBuilder($baseConfig);
+        $mode = $builder->getServerMode();
+
+        $this->assertSame(SWOOLE_BASE, $mode);
+    }
+
+    /**
+     * @covers \Sidalex\SwooleApp\Classes\Builder\ConfigBuilder::getServerMode
+     */
+    public function testGetServerModeProcessFromConfig(): void
+    {
+        $baseConfig = new \stdClass();
+        $baseConfig->server = new \stdClass();
+        $baseConfig->server->mode = 'PROCESS';
+
+        $builder = new ConfigBuilder($baseConfig);
+        $mode = $builder->getServerMode();
+
+        $this->assertSame(SWOOLE_PROCESS, $mode);
+    }
 }
 
 /**
