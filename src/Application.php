@@ -18,10 +18,18 @@ use Sidalex\SwooleApp\Classes\Tasks\TaskResulted;
 use Sidalex\SwooleApp\Classes\Utils\Utilities;
 use Sidalex\SwooleApp\Classes\Wrapper\ConfigWrapper;
 use Sidalex\SwooleApp\Classes\Wrapper\StateContainerWrapper;
+use Sidalex\SwooleApp\Classes\Events\SwooleEventHandlersBuilder;
+use Sidalex\SwooleApp\Classes\Events\SwooleEventHandlersRegistry;
+use Sidalex\SwooleApp\Classes\Events\EventHandlerExecutor;
+use Sidalex\SwooleApp\Classes\Events\EventContext;
 use Swoole\Coroutine;
 use Swoole\Http\Server;
 
 class Application {
+    private static ?Application $instance = null;
+
+    protected SwooleEventHandlersRegistry $eventHandlersRegistry;
+    protected EventHandlerExecutor $eventHandlerExecutor;
     protected ConfigWrapper $config;
     protected ConfigBuilder $configBuilder;
     /**
@@ -52,6 +60,8 @@ class Application {
         ?RoutesCollectionBuilder $routesCollectionBuilder = null,
     ) {
         try {
+            self::$instance = $this;
+
             $this->configBuilder = $configBuilder ?? new ConfigBuilder($baseConfig);
             if (!empty($configValidators) && !$this->configBuilder->validate($configValidators)) {
                 throw new \RuntimeException(
@@ -65,6 +75,7 @@ class Application {
             $this->initializeRoutes($routesCollectionBuilder);
             $this->initializeStateContainer();
             $this->initializeWorkerDispatcher();
+            $this->initializeEventHandlers();
         } catch (\Exception $e) {
             error_log('Application initialization failed: ' . $e->getMessage());
             throw $e;
@@ -94,6 +105,23 @@ class Application {
         error_log("[SwooleApp] Загружен пользовательский диспатчер: {$dispatcherClass}");
     }
 
+    private function initializeEventHandlers(): void
+    {
+        $builder = new SwooleEventHandlersBuilder($this->config);
+        $this->eventHandlersRegistry = $builder->build();
+        $this->eventHandlerExecutor = new EventHandlerExecutor($this, $this->eventHandlersRegistry);
+    }
+
+    public static function getInstance(): ?Application
+    {
+        return self::$instance;
+    }
+
+    public function getEventHandlersRegistry(): SwooleEventHandlersRegistry
+    {
+        return $this->eventHandlersRegistry;
+    }
+
     /**
      * Создание и настройка Swoole сервера
      */
@@ -111,47 +139,98 @@ class Application {
         return $this->server;
     }
 
-    /**
-     * Регистрация всех обработчиков сервера
-     */
+
     protected function registerServerHandlers(): void {
         if (!$this->server) {
             throw new \RuntimeException("Server not created. Call createServer() first.");
         }
 
+        $app = $this;
+
         // Обработчик старта воркера с детализацией типа
-        $this->server->on("workerStart", function (Server $server, int $workerId) {
-            // Определяем тип воркера через свойства сервера
+        $this->server->on("workerStart", function (Server $server, int $workerId) use ($app) {
+            $context = EventContext::forWorkerStart($server, $workerId);
+            $context->setEventName('workerStart');
+
+            $app->eventHandlerExecutor->executeBeforeHandlers($server, $context);
+
+            // Стандартная логика
             $isTaskWorker = $server->taskworker;
             $processType = $isTaskWorker ? 'task_worker' : 'worker';
 
             echo "Process started: type={$processType}, workerId={$workerId}\n";
 
-            // Запускаем циклические задачи только для HTTP воркеров (не task)
             if (!$isTaskWorker) {
-                $this->initCyclicJobsWithWorker($server, $workerId);
+                $app->initCyclicJobsWithWorker($server, $workerId);
             } else {
                 echo "Process type {$processType} - skipping cyclic jobs.\n";
             }
+
+            $app->eventHandlerExecutor->executeAfterHandlers($server, $context);
         });
 
         // Обработчик остановки воркера
-        $this->server->on("workerStop", function (Server $server, int $workerId) {
+        $this->server->on("workerStop", function (Server $server, int $workerId) use ($app) {
+            $context = EventContext::forWorkerStop($server, $workerId);
+            $context->setEventName('workerStop');
+
+            $app->eventHandlerExecutor->executeBeforeHandlers($server, $context);
+
+            // Стандартная логика
             $isTaskWorker = $server->taskworker;
             $processType = $isTaskWorker ? 'task_worker' : 'worker';
 
             echo "Process stopping: type={$processType}, workerId={$workerId}\n";
-            $this->shutdownCyclicJobs();
+            $app->shutdownCyclicJobs();
+
+            $app->eventHandlerExecutor->executeAfterHandlers($server, $context);
         });
 
         // Обработчик HTTP запросов
-        $this->server->on("request", function ($request, $response) {
-            $this->execute($request, $response, $this->server);
+        $this->server->on("request", function ($request, $response) use ($app) {
+            $context = EventContext::forRequest($request, $response);
+            $context->setEventName('request');
+
+            $app->eventHandlerExecutor->executeBeforeHandlers($this->server, $context);
+
+            $app->execute($request, $response, $this->server);
+
+            $app->eventHandlerExecutor->executeAfterHandlers($this->server, $context);
         });
 
         // Обработчик задач
-        $this->server->on('task', function (Server $server, $taskId, $reactorId, $data) {
-            return $this->taskExecute($server, $taskId, $reactorId, $data);
+        $this->server->on('task', function (Server $server, $taskId, $reactorId, $data) use ($app) {
+            $context = EventContext::forTask($server, $taskId, $reactorId, $data);
+            $context->setEventName('task');
+
+            $app->eventHandlerExecutor->executeBeforeHandlers($server, $context);
+
+            $result = $app->taskExecute($server, $taskId, $reactorId, $data);
+
+            $context->setTaskResult($result);
+            $app->eventHandlerExecutor->executeAfterHandlers($server, $context);
+
+            return $result;
+        });
+
+        // Обработчик connect
+        $this->server->on("connect", function (Server $server, int $fd, int $reactorId) use ($app) {
+            $context = EventContext::forConnect($server, $fd, $reactorId);
+            $context->setEventName('connect');
+
+            $app->eventHandlerExecutor->executeBeforeHandlers($server, $context);
+        });
+
+        // Обработчик close
+        $this->server->on("close", function (Server $server, int $fd, int $reactorId) use ($app) {
+            $context = EventContext::forClose($server, $fd, $reactorId);
+            $context->setEventName('close');
+
+            $app->eventHandlerExecutor->executeBeforeHandlers($server, $context);
+
+            // Стандартная логика (если нужна)
+
+            $app->eventHandlerExecutor->executeAfterHandlers($server, $context);
         });
     }
 

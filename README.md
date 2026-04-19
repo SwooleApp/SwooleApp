@@ -40,6 +40,12 @@
     * [Creating a State Container](#creating-a-state-container)
     * [Accessing State Containers](#accessing-state-containers)
     * [Best Practices State Containers](#best-practices-state-containers)
+* [Custom Event Handlers](#custom-event-handlers)
+    * [Events](#events)
+    * [Handler Format](#handler-format)
+    * [Priority](#priority)
+    * [Error Handling](#error-handling)
+    * [Examples](#examples)
 <!-- TOC -->
 
 
@@ -53,26 +59,15 @@ composer require sidalex/swoole-app
 
 To run the Swoole application, you need to create a script named server.php with the following content:
 
-
 ```php
 <?php
 declare(strict_types=1);
 require_once "./vendor/autoload.php";
-use Swoole\Http\Request;
-use Swoole\Http\Response;
 
 $config = json_decode(file_get_contents('./config.json'));
 
 $app = new \Sidalex\SwooleApp\Application($config);
 $server = $app->createServer();
-
-$server->on(
-    "request",
-    function (Request $request, Response $response) use ($app, $server) {
-        $app->execute($request, $response, $server);
-    }
-);
-
 $server->start();
 ```
 
@@ -752,6 +747,111 @@ Resource Management: If your container manages resources like database connectio
 
 Key Naming: Use descriptive and unique keys for your containers to avoid collisions.
 
+## Custom Event Handlers
+
+Custom Event Handlers allow you to add custom logic before and after standard Swoole event handlers.
+
+### Events
+
+Available events for interception:
+
+| Event | Description | Worker Type |
+|-------|------------|-------------|
+| `workerStart` | Worker start | HTTP / Task |
+| `workerStop` | Worker stop | HTTP / Task |
+| `request` | Each HTTP request | HTTP |
+| `task` | Async task execution | Task |
+| `connect` | Client connection | HTTP |
+| `close` | Client disconnection | HTTP |
+
+### Handler Format
+
+Handlers can be defined as closures, class methods, or invokable classes. **Important**: All handlers receive `Application` as the first parameter.
+
+```php
+$config = new \stdClass();
+$config->events = [
+    'workerStart' => [
+        'before' => [
+            // Closure handler
+            0 => function(\Sidalex\SwooleApp\Application $app, \Swoole\Http\Server $server, int $workerId) {
+                error_log("Worker {$workerId} starting");
+            },
+        ],
+        'after' => [
+            // Class method handler
+            0 => [MyHandler::class, 'handle'],
+        ],
+    ],
+    'request' => [
+        'before' => [
+            0 => [RequestLogger::class, 'log'],
+        ],
+    ],
+];
+```
+
+### Priority
+
+- Default priority: `0`
+- Lower numbers execute first
+- Duplicate priorities are not allowed (throws exception at startup)
+
+### Error Handling
+
+- Duplicate priority: throws `RuntimeException` at startup
+- Non-existent class: throws `RuntimeException` at startup
+- Non-existent method: throws `RuntimeException` at startup
+- Handler exceptions: logged, execution continues
+
+### Examples
+
+```php
+// Logging worker start
+class StartupLogger {
+    public function handle(\Sidalex\SwooleApp\Application $app, \Swoole\Http\Server $server, int $workerId): void
+    {
+        $type = $server->taskworker ? 'Task Worker' : 'HTTP Worker';
+        error_log("[{$type}] Worker #{$workerId} started");
+    }
+}
+
+// Request validation
+class RequestValidator {
+    public function handle(\Sidalex\SwooleApp\Application $app, \Swoole\Http\Request $request, \Swoole\Http\Response $response): void
+    {
+        $uri = $request->server['request_uri'] ?? '/';
+        if (str_starts_with($uri, '/admin') && !$this->hasAdminToken($request)) {
+            $response->status(403);
+            $response->end(json_encode(['error' => 'Forbidden']));
+        }
+    }
+
+    private function hasAdminToken(\Swoole\Http\Request $request): bool
+    {
+        return isset($request->header['x-admin-token']);
+    }
+}
+
+// Config
+$config = new \stdClass();
+$config->events = [
+    'workerStart' => [
+        'after' => [
+            0 => [StartupLogger::class, 'handle'],
+        ],
+    ],
+    'request' => [
+        'before' => [
+            0 => [RequestValidator::class, 'handle'],
+        ],
+    ],
+];
+
+$app = new \Sidalex\SwooleApp\Application($config);
+$server = $app->createServer();
+$server->start();
+```
 
 
 
@@ -788,8 +888,14 @@ Key Naming: Use descriptive and unique keys for your containers to avoid collisi
 * [notFoundController](#notfoundcontroller)
 * [Контейнеры состояний](#контейнеры-состояний)
    * [Создание контейнера состояний](#создание-контейнера-состояний)
-   * [Доступ к контейнерам состояний](#доступ-к-контейнерам-состояний)
-   * [Лучшие практики использования Контейнеров состояний](#лучшие-практики-использования-контейнеров-состояний)
+* [Доступ к контейнерам состояний](#доступ-к-контейнерам-состояний)
+    * [Лучшие практики использования Контейнеров состояний](#лучшие-практики-использования-контейнеров-состояний)
+* [Пользовательские обработчики событий](#пользовательские-обработчики-событий)
+    * [События](#события)
+    * [Формат обработчика](#формат-обработчика)
+    * [Приоритет](#приоритет)
+    * [Обработка ошибок](#обработка-ошибок)
+    * [Примеры](#примеры)
 <!-- TOC -->
 
 ## Установка
@@ -805,24 +911,15 @@ composer require sidalex/swoole-app
 <?php
 declare(strict_types=1);
 require_once "./vendor/autoload.php";
-use Swoole\Http\Request;
-use Swoole\Http\Response;
 
 $config = json_decode(file_get_contents('./config.json'));
 
 $app = new \Sidalex\SwooleApp\Application($config);
 $server = $app->createServer();
-
-$server->on(
-    "request",
-    function (Request $request, Response $response) use ($app, $server) {
-        $app->execute($request, $response, $server);
-    }
-);
-
 $server->start();
 ```
-Переменная $config должна быть `\stdClass` и может содержать параметры писанные [тут](#config).
+
+Переменная `$config` должна быть `\stdClass` и может содержать параметры писанные [тут](#config).
 
 По умолчанию сервер запускается на `0.0.0.0:9501`. Вы можете переопределить эти значения через переменные окружения или config.json:
 
@@ -1480,3 +1577,109 @@ $db = $this->application->getStateContainer()->getContainer('database');
 Управление ресурсами: Если ваш контейнер управляет ресурсами, такими как подключения к базе данных, при необходимости реализуйте надлежащую очистку в деструкторе.
 
 Именование ключей: Используйте описательные и уникальные ключи для ваших контейнеров, чтобы избежать конфликтов.
+
+## Пользовательские обработчики событий
+
+Пользовательские обработчики событий позволяют добавить собственную логику до и после стандартных обработчиков событий Swoole.
+
+### События
+
+Доступные события для перехвата:
+
+| Событие | Описание | Тип воркера |
+|--------|----------|-------------|
+| `workerStart` | Запуск воркера | HTTP / Task |
+| `workerStop` | Остановка воркера | HTTP / Task |
+| `request` | Каждый HTTP запрос | HTTP |
+| `task` | Выполнение асинхронной задачи | Task |
+| `connect` | Установка соединения | HTTP |
+| `close` | Закрытие соединения | HTTP |
+
+### Формат обработчика
+
+Обработчики могут быть определены как замыкания, методы классов или вызываемые классы. **Важно**: Все обработчики получают `Application` первым параметром.
+
+```php
+$config = new \stdClass();
+$config->events = [
+    'workerStart' => [
+        'before' => [
+            // Обработчик-замыкание
+            0 => function(\Sidalex\SwooleApp\Application $app, \Swoole\Http\Server $server, int $workerId) {
+                error_log("Worker {$workerId} starting");
+            },
+        ],
+        'after' => [
+            // Обработчик с методом класса
+            0 => [MyHandler::class, 'handle'],
+        ],
+    ],
+    'request' => [
+        'before' => [
+            0 => [RequestLogger::class, 'log'],
+        ],
+    ],
+];
+```
+
+### Приоритет
+
+- Приоритет по умолчанию: `0`
+- Меньшие числа выполняются первыми
+- Дубликаты приоритетов запрещены (выбрасывается исключение при старте)
+
+### Обработка ошибок
+
+- Дубликат приоритета: выбрасывает `RuntimeException` при старте
+- Несуществующий класс: выбрасывает `RuntimeException` при старте
+- Несуществующий метод: выбрасывает `RuntimeException` при старте
+- Исключения в обработчиках: логируются, выполнение продолжается
+
+### Примеры
+
+```php
+// Логирование старта воркера
+class StartupLogger {
+    public function handle(\Sidalex\SwooleApp\Application $app, \Swoole\Http\Server $server, int $workerId): void
+    {
+        $type = $server->taskworker ? 'Task Worker' : 'HTTP Worker';
+        error_log("[{$type}] Worker #{$workerId} started");
+    }
+}
+
+// Валидация запроса
+class RequestValidator {
+    public function handle(\Sidalex\SwooleApp\Application $app, \Swoole\Http\Request $request, \Swoole\Http\Response $response): void
+    {
+        $uri = $request->server['request_uri'] ?? '/';
+        if (str_starts_with($uri, '/admin') && !$this->hasAdminToken($request)) {
+            $response->status(403);
+            $response->end(json_encode(['error' => 'Forbidden']));
+        }
+    }
+
+    private function hasAdminToken(\Swoole\Http\Request $request): bool
+    {
+        return isset($request->header['x-admin-token']);
+    }
+}
+
+// Конфиг
+$config = new \stdClass();
+$config->events = [
+    'workerStart' => [
+        'after' => [
+            0 => [StartupLogger::class, 'handle'],
+        ],
+    ],
+    'request' => [
+        'before' => [
+            0 => [RequestValidator::class, 'handle'],
+        ],
+    ],
+];
+
+$app = new \Sidalex\SwooleApp\Application($config);
+$server = $app->createServer();
+$server->start();
+```
