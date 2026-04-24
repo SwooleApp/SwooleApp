@@ -10,6 +10,9 @@
 * [Config](#config)
 * [List of config parameters](#list-of-config-parameters)
     * [.env File Format or environment variables in docker](#env-file-format-or-environment-variables-in-docker)
+    * [Server Configuration](#server-configuration)
+        * [Server Mode](#server-mode)
+        * [Server Host and Port](#server-host-and-port)
     * [Configuration Validation](#configuration-validation)
 * [Task](#task)
     * [Methods:](#methods-)
@@ -37,6 +40,12 @@
     * [Creating a State Container](#creating-a-state-container)
     * [Accessing State Containers](#accessing-state-containers)
     * [Best Practices State Containers](#best-practices-state-containers)
+* [Custom Event Handlers](#custom-event-handlers)
+    * [Events](#events)
+    * [Handler Format](#handler-format)
+    * [Priority](#priority)
+    * [Error Handling](#error-handling)
+    * [Examples](#examples)
 <!-- TOC -->
 
 
@@ -50,47 +59,21 @@ composer require sidalex/swoole-app
 
 To run the Swoole application, you need to create a script named server.php with the following content:
 
-
 ```php
 <?php
 declare(strict_types=1);
 require_once "./vendor/autoload.php";
-use Swoole\Http\Request;
-use Swoole\Http\Response;
-use Swoole\Http\Server;
-use Swoole\Constant;
+
 $config = json_decode(file_get_contents('./config.json'));
-$http = new Server("0.0.0.0", 9501);
-$http->set(
-    [
-        Constant::OPTION_WORKER_NUM => 2,
-        Constant::OPTION_TASK_WORKER_NUM => (swoole_cpu_num()) * 10,
-    ]
-);
 
 $app = new \Sidalex\SwooleApp\Application($config);
-$http->on(
-    "start",
-    function (Server $http) use ($app) {
-        echo "Swoole HTTP server is started.\n";
-        $app->initCyclicJobs($http);
-    }
-);
-$http->on(
-    "request",
-    function (Request $request, Response $response) use ($app,$http) {
-        $app->execute($request, $response,$http);
-    }
-);
-$http->on(
-    'task',
-    function (Server $server, $taskId, $reactorId, $data) use ($app) {
-        return $app->taskExecute($server, $taskId, $reactorId, $data);
-    }
-);
-$http->start();
+$server = $app->createServer();
+$server->start();
 ```
-The $config variable should be \stdClass and can contain parameters described here.
+
+The `$config` variable should be `\stdClass` and can contain parameters described [here](#config).
+
+By default, the server runs on `0.0.0.0:9501`. You can override these values via environment variables or config.json:
 
 To run background processes that should execute periodically (not triggered by user action but by scheduler), the CyclicJobsInterface is implemented. For a more detailed description of its usage, see here. To automatically start background cyclic processes, they need to be specified in the config here.
 
@@ -151,6 +134,128 @@ object(stdClass) {
 }
 ```
 
+**Priority order:**
+1. Variables from `.env` file are loaded first
+2. Environment variables from `$_ENV` or passed to constructor override `.env` values
+
+This allows you to define default values in `.env` file and override them via Docker or system environment variables.
+```
+
+### Server Configuration
+
+The framework allows configuring Swoole server parameters either through environment variables or via config.json.
+
+#### Server Mode
+
+You can configure the server to run in different modes:
+
+- `SWOOLE_PROCESS` (default) - Multi-process mode (recommended for production)
+- `SWOOLE_BASE` - Single worker mode (simpler, useful for debugging)
+
+Configuration via environment variables:
+```ini
+SWOOLE_APP_SERVER_MODE=PROCESS
+# or
+SWOOLE_APP_SERVER_MODE=BASE
+```
+
+Configuration via config.json:
+```json
+{
+    "server": {
+        "mode": "PROCESS"
+    }
+}
+```
+or
+```json
+{
+    "server": {
+        "mode": "BASE"
+    }
+}
+```
+
+#### Server Host and Port
+
+You can configure the server host and port:
+
+Configuration via environment variables:
+```ini
+SWOOLE_APP_SERVER_HOST=0.0.0.0
+SWOOLE_APP_SERVER_PORT=9501
+```
+
+Configuration via config.json:
+```json
+{
+    "server": {
+        "host": "0.0.0.0",
+        "port": 9501
+    }
+}
+```
+
+When using the Application class, you can create and start the server:
+
+```php
+$app = new \Sidalex\SwooleApp\Application($config);
+$server = $app->createServer(); // Uses configured host/port/mode
+$server->start();
+```
+
+#### Swoole Server Parameters
+
+You can configure additional Swoole server parameters via environment variables using the `SWOOLE__` prefix:
+
+```ini
+SWOOLE_APP_DEBUG=true
+SWOOLE_APP_SWOOLE__WORKER_NUM=4
+SWOOLE_APP_SWOOLE__TASK_WORKER_NUM=8
+SWOOLE_APP_SWOOLE__DAEMONIZE=false
+SWOOLE_APP_SWOOLE__LOG_FILE=/var/log/swoole.log
+SWOOLE_APP_SWOOLE__REACTOR_NUM=2
+SWOOLE_APP_SWOOLE__MAX_REQUEST=1000
+SWOOLE_APP_SWOOLE__TASK_ENABLE_COROUTINE=true
+SWOOLE_APP_SWOOLE__PACKAGE_MAX_LENGTH=1048576
+SWOOLE_APP_SWOOLE__BUFFER_OUTPUT_SIZE=1048576
+```
+
+Or via config.json:
+
+```json
+{
+    "SWOOLE": {
+        "worker_num": 4,
+        "task_worker_num": 8,
+        "daemonize": false,
+        "log_file": "/var/log/swoole.log",
+        "reactor_num": 2,
+        "max_request": 1000,
+        "task_enable_coroutine": true,
+        "package_max_length": 1048576,
+        "buffer_output_size": 1048576
+    }
+}
+```
+
+**Parameters:**
+- `worker_num` - Number of worker processes (default: CPU cores)
+- `task_worker_num` - Number of task worker processes (default: CPU cores * 10)
+- `daemonize` - Run server in daemon mode
+- `log_file` - Path to log file
+- `reactor_num` - Number of reactor threads
+- `max_request` - Max requests per worker before recycling
+- `task_enable_coroutine` - Enable coroutines in task workers
+- `package_max_length` - Maximum packet size
+- `buffer_output_size` - Output buffer size
+
+For full list of parameters, see [Swoole Documentation](https://wiki.swoole.com/ru/#/server/setting)
+
+#### Complete Configuration Example
+
+See `config.json.example` for a complete configuration file with all application and Swoole server parameters.
+
 ### Configuration Validation
 
 1. Create validator class:
@@ -186,18 +291,6 @@ CyclicJobs - an array of classes implementing the CyclicJobsInterface interface 
 ## Task
 
 Tasks represent processes that run outside of the asynchronous execution process and can be invoked from any part of the application.
-
-To simplify working with tasks and standardize their execution within the framework, a mechanism has been added to initiate these processes. To use this mechanism when starting the Swoole server (`server.php`), you need to add the following code block:
-
-```php
-$http->on(
-    'task',
-    function (Server $server, $taskId, $reactorId, $data) use ($app) {
-        return $app->taskExecute($server, $taskId, $reactorId, $data);
-    }
-);
-```
-If this code block is not initiated, the framework won't be able to work with the BasicTaskData class and the TaskDataInterface interface.
 
 These processes may contain blocking operations.
 
@@ -654,6 +747,111 @@ Resource Management: If your container manages resources like database connectio
 
 Key Naming: Use descriptive and unique keys for your containers to avoid collisions.
 
+## Custom Event Handlers
+
+Custom Event Handlers allow you to add custom logic before and after standard Swoole event handlers.
+
+### Events
+
+Available events for interception:
+
+| Event | Description | Worker Type |
+|-------|------------|-------------|
+| `workerStart` | Worker start | HTTP / Task |
+| `workerStop` | Worker stop | HTTP / Task |
+| `request` | Each HTTP request | HTTP |
+| `task` | Async task execution | Task |
+| `connect` | Client connection | HTTP |
+| `close` | Client disconnection | HTTP |
+
+### Handler Format
+
+Handlers can be defined as closures, class methods, or invokable classes. **Important**: All handlers receive `Application` as the first parameter.
+
+```php
+$config = new \stdClass();
+$config->events = [
+    'workerStart' => [
+        'before' => [
+            // Closure handler
+            0 => function(\Sidalex\SwooleApp\Application $app, \Swoole\Http\Server $server, int $workerId) {
+                error_log("Worker {$workerId} starting");
+            },
+        ],
+        'after' => [
+            // Class method handler
+            0 => [MyHandler::class, 'handle'],
+        ],
+    ],
+    'request' => [
+        'before' => [
+            0 => [RequestLogger::class, 'log'],
+        ],
+    ],
+];
+```
+
+### Priority
+
+- Default priority: `0`
+- Lower numbers execute first
+- Duplicate priorities are not allowed (throws exception at startup)
+
+### Error Handling
+
+- Duplicate priority: throws `RuntimeException` at startup
+- Non-existent class: throws `RuntimeException` at startup
+- Non-existent method: throws `RuntimeException` at startup
+- Handler exceptions: logged, execution continues
+
+### Examples
+
+```php
+// Logging worker start
+class StartupLogger {
+    public function handle(\Sidalex\SwooleApp\Application $app, \Swoole\Http\Server $server, int $workerId): void
+    {
+        $type = $server->taskworker ? 'Task Worker' : 'HTTP Worker';
+        error_log("[{$type}] Worker #{$workerId} started");
+    }
+}
+
+// Request validation
+class RequestValidator {
+    public function handle(\Sidalex\SwooleApp\Application $app, \Swoole\Http\Request $request, \Swoole\Http\Response $response): void
+    {
+        $uri = $request->server['request_uri'] ?? '/';
+        if (str_starts_with($uri, '/admin') && !$this->hasAdminToken($request)) {
+            $response->status(403);
+            $response->end(json_encode(['error' => 'Forbidden']));
+        }
+    }
+
+    private function hasAdminToken(\Swoole\Http\Request $request): bool
+    {
+        return isset($request->header['x-admin-token']);
+    }
+}
+
+// Config
+$config = new \stdClass();
+$config->events = [
+    'workerStart' => [
+        'after' => [
+            0 => [StartupLogger::class, 'handle'],
+        ],
+    ],
+    'request' => [
+        'before' => [
+            0 => [RequestValidator::class, 'handle'],
+        ],
+    ],
+];
+
+$app = new \Sidalex\SwooleApp\Application($config);
+$server = $app->createServer();
+$server->start();
+```
 
 
 
@@ -664,6 +862,9 @@ Key Naming: Use descriptive and unique keys for your containers to avoid collisi
 * [Конфиг](#конфиг)
    * [Список параметров конфига](#список-параметров-конфига)
    * [Формат .env файла или переменных окружения в docker](#формат-env-файла-или-переменных-окружения-в-docker)
+   * [Конфигурация сервера](#конфигурациясервера)
+       * [Режим работы сервера](#режим-работы-сервера)
+       * [Хост и порт сервера](#хост-и-порт-сервера)
    * [Валидация конфигурации](#валидация-конфигурации)
 * [Task Задача](#task-задача)
    * [Методы Task:](#методы-task-)
@@ -687,8 +888,14 @@ Key Naming: Use descriptive and unique keys for your containers to avoid collisi
 * [notFoundController](#notfoundcontroller)
 * [Контейнеры состояний](#контейнеры-состояний)
    * [Создание контейнера состояний](#создание-контейнера-состояний)
-   * [Доступ к контейнерам состояний](#доступ-к-контейнерам-состояний)
-   * [Лучшие практики использования Контейнеров состояний](#лучшие-практики-использования-контейнеров-состояний)
+* [Доступ к контейнерам состояний](#доступ-к-контейнерам-состояний)
+    * [Лучшие практики использования Контейнеров состояний](#лучшие-практики-использования-контейнеров-состояний)
+* [Пользовательские обработчики событий](#пользовательские-обработчики-событий)
+    * [События](#события)
+    * [Формат обработчика](#формат-обработчика)
+    * [Приоритет](#приоритет)
+    * [Обработка ошибок](#обработка-ошибок)
+    * [Примеры](#примеры)
 <!-- TOC -->
 
 ## Установка
@@ -704,42 +911,17 @@ composer require sidalex/swoole-app
 <?php
 declare(strict_types=1);
 require_once "./vendor/autoload.php";
-use Swoole\Http\Request;
-use Swoole\Http\Response;
-use Swoole\Http\Server;
-use Swoole\Constant;
+
 $config = json_decode(file_get_contents('./config.json'));
-$http = new Server("0.0.0.0", 9501);
-$http->set(
-    [
-        Constant::OPTION_WORKER_NUM => 2,
-        Constant::OPTION_TASK_WORKER_NUM => (swoole_cpu_num()) * 10,
-    ]
-);
 
 $app = new \Sidalex\SwooleApp\Application($config);
-$http->on(
-    "start",
-    function (Server $http) use ($app) {
-        echo "Swoole HTTP server is started.\n";
-        $app->initCyclicJobs($http);
-    }
-);
-$http->on(
-    "request",
-    function (Request $request, Response $response) use ($app,$http) {
-        $app->execute($request, $response,$http);
-    }
-);
-$http->on(
-    'task',
-    function (Server $server, $taskId, $reactorId, $data) use ($app) {
-        return $app->taskExecute($server, $taskId, $reactorId, $data);
-    }
-);
-$http->start();
+$server = $app->createServer();
+$server->start();
 ```
-Переменная $config должна быть \stdClass и может содержать параметры писанные [тут](#config)
+
+Переменная `$config` должна быть `\stdClass` и может содержать параметры писанные [тут](#config).
+
+По умолчанию сервер запускается на `0.0.0.0:9501`. Вы можете переопределить эти значения через переменные окружения или config.json:
 
 Для запуска фоновых процессов, которые должны исполняться периодичски (не от действия пользователя а по планировщику)
 реализован интерфейс CyclicJobsInterface более подробное описание его использования [тут](#cyclic-job). Для Автоматического запуска фоновых циклических процессов их необходимо указать в конфиге [тут]().
@@ -796,6 +978,128 @@ object(stdClass) {
 }
 ```
 
+**Порядок приоритета:**
+1. Переменные из файла `.env` загружаются первыми
+2. Переменные окружения из `$_ENV` или переданные в конструктор переопределяют значения из `.env`
+
+Это позволяет определить значения по умолчанию в файле `.env` и переопределять их через Docker или системные переменные окружения.
+```
+
+### Конфигурация сервера
+
+Фреймворк позволяет настраивать параметры сервера Swoole через переменные окружения или config.json.
+
+#### Режим работы сервера
+
+Вы можете настроить сервер для работы в разных режимах:
+
+- `SWOOLE_PROCESS` (по умолчанию) - Многопроцессорный режим (рекомендуется для продакшена)
+- `SWOOLE_BASE` - Одноворкерный режим (проще, полезно для отладки)
+
+Конфигурация через переменные окружения:
+```ini
+SWOOLE_APP_SERVER_MODE=PROCESS
+# или
+SWOOLE_APP_SERVER_MODE=BASE
+```
+
+Конфигурация через config.json:
+```json
+{
+    "server": {
+        "mode": "PROCESS"
+    }
+}
+```
+или
+```json
+{
+    "server": {
+        "mode": "BASE"
+    }
+}
+```
+
+#### Хост и порт сервера
+
+Вы можете настроить хост и порт сервера:
+
+Конфигурация через переменные окружения:
+```ini
+SWOOLE_APP_SERVER_HOST=0.0.0.0
+SWOOLE_APP_SERVER_PORT=9501
+```
+
+Конфигурация через config.json:
+```json
+{
+    "server": {
+        "host": "0.0.0.0",
+        "port": 9501
+    }
+}
+```
+
+При использовании класса Application вы можете создать и запустить сервер:
+
+```php
+$app = new \Sidalex\SwooleApp\Application($config);
+$server = $app->createServer(); // Использует настроенные host/port/mode
+$server->start();
+```
+
+#### Параметры сервера Swoole
+
+Вы можете настроить дополнительные параметры сервера Swoole через переменные окружения с префиксом `SWOOLE__`:
+
+```ini
+SWOOLE_APP_DEBUG=true
+SWOOLE_APP_SWOOLE__WORKER_NUM=4
+SWOOLE_APP_SWOOLE__TASK_WORKER_NUM=8
+SWOOLE_APP_SWOOLE__DAEMONIZE=false
+SWOOLE_APP_SWOOLE__LOG_FILE=/var/log/swoole.log
+SWOOLE_APP_SWOOLE__REACTOR_NUM=2
+SWOOLE_APP_SWOOLE__MAX_REQUEST=1000
+SWOOLE_APP_SWOOLE__TASK_ENABLE_COROUTINE=true
+SWOOLE_APP_SWOOLE__PACKAGE_MAX_LENGTH=1048576
+SWOOLE_APP_SWOOLE__BUFFER_OUTPUT_SIZE=1048576
+```
+
+Или через config.json:
+
+```json
+{
+    "SWOOLE": {
+        "worker_num": 4,
+        "task_worker_num": 8,
+        "daemonize": false,
+        "log_file": "/var/log/swoole.log",
+        "reactor_num": 2,
+        "max_request": 1000,
+        "task_enable_coroutine": true,
+        "package_max_length": 1048576,
+        "buffer_output_size": 1048576
+    }
+}
+```
+
+**Параметры:**
+- `worker_num` - Количество рабочих процессов (по умолчанию: ядра CPU)
+- `task_worker_num` - Количество процессов для задач (по умолчанию: ядра CPU * 10)
+- `daemonize` - Запуск сервера в режиме демона
+- `log_file` - Путь к файлу логов
+- `reactor_num` - Количество потоков reactor
+- `max_request` - Максимум запросов на воркер перед перезапуском
+- `task_enable_coroutine` - Включить корутины в task-воркерах
+- `package_max_length` - Максимальный размер пакета
+- `buffer_output_size` - Размер буфера вывода
+
+Полный список параметров см. в [Документации Swoole](https://wiki.swoole.com/ru/#/server/setting)
+
+#### Полный пример конфигурации
+
+См. `config.json.example` для полного примера конфигурационного файла со всеми параметрами приложения и сервера Swoole.
+
 ### Валидация конфигурации
 
 1. Создайте класс-валидатор:
@@ -830,17 +1134,6 @@ CyclicJobs - мкассив слассов , которые имплементи
 
 ## Task Задача
 Tasks (задачи) представляют собой процессы, которые выполняются вне асинхронного процесса выполнения и могут быть вызваны в любой части приложения.
-
-Для упрощения работы с задачами и стандартизации их выполнения в рамках фреймворка был добавлен механизм, позволяющий инициировать эти процессы. Для использования этого механизма при запуске сервера Swoole(server.php) необходимо добавить следующий блок кода:
-```php
-$http->on(
-    'task',
-    function (Server $server, $taskId, $reactorId, $data) use ($app) {
-        return $app->taskExecute($server, $taskId, $reactorId, $data);
-    }
-);
-```
-Если данный блок кода не будет инициирован, то фреймворк не сможет работать с классом BasicTaskData и интерфейсом TaskDataInterface.
 
 В этих процессах могут содержаться блокирующие операции.
 
@@ -1284,3 +1577,109 @@ $db = $this->application->getStateContainer()->getContainer('database');
 Управление ресурсами: Если ваш контейнер управляет ресурсами, такими как подключения к базе данных, при необходимости реализуйте надлежащую очистку в деструкторе.
 
 Именование ключей: Используйте описательные и уникальные ключи для ваших контейнеров, чтобы избежать конфликтов.
+
+## Пользовательские обработчики событий
+
+Пользовательские обработчики событий позволяют добавить собственную логику до и после стандартных обработчиков событий Swoole.
+
+### События
+
+Доступные события для перехвата:
+
+| Событие | Описание | Тип воркера |
+|--------|----------|-------------|
+| `workerStart` | Запуск воркера | HTTP / Task |
+| `workerStop` | Остановка воркера | HTTP / Task |
+| `request` | Каждый HTTP запрос | HTTP |
+| `task` | Выполнение асинхронной задачи | Task |
+| `connect` | Установка соединения | HTTP |
+| `close` | Закрытие соединения | HTTP |
+
+### Формат обработчика
+
+Обработчики могут быть определены как замыкания, методы классов или вызываемые классы. **Важно**: Все обработчики получают `Application` первым параметром.
+
+```php
+$config = new \stdClass();
+$config->events = [
+    'workerStart' => [
+        'before' => [
+            // Обработчик-замыкание
+            0 => function(\Sidalex\SwooleApp\Application $app, \Swoole\Http\Server $server, int $workerId) {
+                error_log("Worker {$workerId} starting");
+            },
+        ],
+        'after' => [
+            // Обработчик с методом класса
+            0 => [MyHandler::class, 'handle'],
+        ],
+    ],
+    'request' => [
+        'before' => [
+            0 => [RequestLogger::class, 'log'],
+        ],
+    ],
+];
+```
+
+### Приоритет
+
+- Приоритет по умолчанию: `0`
+- Меньшие числа выполняются первыми
+- Дубликаты приоритетов запрещены (выбрасывается исключение при старте)
+
+### Обработка ошибок
+
+- Дубликат приоритета: выбрасывает `RuntimeException` при старте
+- Несуществующий класс: выбрасывает `RuntimeException` при старте
+- Несуществующий метод: выбрасывает `RuntimeException` при старте
+- Исключения в обработчиках: логируются, выполнение продолжается
+
+### Примеры
+
+```php
+// Логирование старта воркера
+class StartupLogger {
+    public function handle(\Sidalex\SwooleApp\Application $app, \Swoole\Http\Server $server, int $workerId): void
+    {
+        $type = $server->taskworker ? 'Task Worker' : 'HTTP Worker';
+        error_log("[{$type}] Worker #{$workerId} started");
+    }
+}
+
+// Валидация запроса
+class RequestValidator {
+    public function handle(\Sidalex\SwooleApp\Application $app, \Swoole\Http\Request $request, \Swoole\Http\Response $response): void
+    {
+        $uri = $request->server['request_uri'] ?? '/';
+        if (str_starts_with($uri, '/admin') && !$this->hasAdminToken($request)) {
+            $response->status(403);
+            $response->end(json_encode(['error' => 'Forbidden']));
+        }
+    }
+
+    private function hasAdminToken(\Swoole\Http\Request $request): bool
+    {
+        return isset($request->header['x-admin-token']);
+    }
+}
+
+// Конфиг
+$config = new \stdClass();
+$config->events = [
+    'workerStart' => [
+        'after' => [
+            0 => [StartupLogger::class, 'handle'],
+        ],
+    ],
+    'request' => [
+        'before' => [
+            0 => [RequestValidator::class, 'handle'],
+        ],
+    ],
+];
+
+$app = new \Sidalex\SwooleApp\Application($config);
+$server = $app->createServer();
+$server->start();
+```

@@ -7,33 +7,44 @@ use Sidalex\SwooleApp\Classes\Constants\ApplicationConstants;
 use Sidalex\SwooleApp\Classes\CyclicJobs\CyclicJobRunner;
 use Sidalex\SwooleApp\Classes\Tasks\Executors\TaskExecutorInterface;
 use Sidalex\SwooleApp\Classes\Validators\ConfigValidatorInterface;
-
 use Sidalex\SwooleApp\Classes\Builder\NotFoundControllerBuilder;
 use Sidalex\SwooleApp\Classes\Builder\RoutesCollectionBuilder;
 use Sidalex\SwooleApp\Classes\CyclicJobs\CyclicJobsBuilder;
+use Sidalex\SwooleApp\Classes\CyclicJobs\CyclicJobOrchestrator;
+use Sidalex\SwooleApp\Classes\Dispatcher\DispatcherInterface;
 use Sidalex\SwooleApp\Classes\Initiation\StateContainerInitiationInterface;
 use Sidalex\SwooleApp\Classes\Tasks\Data\TaskDataInterface;
 use Sidalex\SwooleApp\Classes\Tasks\TaskResulted;
 use Sidalex\SwooleApp\Classes\Utils\Utilities;
 use Sidalex\SwooleApp\Classes\Wrapper\ConfigWrapper;
 use Sidalex\SwooleApp\Classes\Wrapper\StateContainerWrapper;
+use Sidalex\SwooleApp\Classes\Events\SwooleEventHandlersBuilder;
+use Sidalex\SwooleApp\Classes\Events\SwooleEventHandlersRegistry;
+use Sidalex\SwooleApp\Classes\Events\EventHandlerExecutor;
+use Sidalex\SwooleApp\Classes\Events\EventContext;
 use Swoole\Coroutine;
 use Swoole\Http\Server;
 
+class Application {
+    private static ?Application $instance = null;
 
-class Application
-{
+    protected SwooleEventHandlersRegistry $eventHandlersRegistry;
+    protected EventHandlerExecutor $eventHandlerExecutor;
     protected ConfigWrapper $config;
+    protected ConfigBuilder $configBuilder;
     /**
      * @var array<mixed>
      */
     protected array $routesCollection;
-
     protected StateContainerWrapper $stateContainer;
+
     /**
      * @var array<array{class: string, options: array<mixed>}>
      */
     protected array $globalMiddlewares = [];
+    protected ?CyclicJobOrchestrator $cyclicJobOrchestrator = null;
+    protected ?Server $server = null;
+    protected ?DispatcherInterface $dispatcher = null;
 
     /**
      * @param \stdClass|null $baseConfig
@@ -43,48 +54,269 @@ class Application
      * @throws \ReflectionException
      */
     public function __construct(
-        ?\stdClass                $baseConfig = null,
-        array                    $configValidators = [],
-        ?ConfigBuilder           $configBuilder = null,
+        ?\stdClass $baseConfig = null,
+        array $configValidators = [],
+        ?ConfigBuilder $configBuilder = null,
         ?RoutesCollectionBuilder $routesCollectionBuilder = null,
-    )
-    {
+    ) {
         try {
-            $loader = $configBuilder ?? new ConfigBuilder($baseConfig);
-            if (!empty($configValidators) && !$loader->validate($configValidators)) {
+            self::$instance = $this;
+
+            $this->configBuilder = $configBuilder ?? new ConfigBuilder($baseConfig);
+            if (!empty($configValidators) && !$this->configBuilder->validate($configValidators)) {
                 throw new \RuntimeException(
                     "Configuration validation failed:\n" .
-                    implode("\n", $loader->getErrors())
+                    implode("\n", $this->configBuilder->getErrors())
                 );
             }
 
-            $this->config = new ConfigWrapper($loader->getConfig());
+            $this->config = new ConfigWrapper($this->configBuilder->getConfig());
             $this->initGlobalMiddlewares();
             $this->initializeRoutes($routesCollectionBuilder);
             $this->initializeStateContainer();
-
+            $this->initializeWorkerDispatcher();
+            $this->initializeEventHandlers();
         } catch (\Exception $e) {
             error_log('Application initialization failed: ' . $e->getMessage());
             throw $e;
         }
     }
 
-    /**
-     * @param RoutesCollectionBuilder|null $routesCollectionBuilder
-     * @return void
-     * @throws \ReflectionException
-     */
-    private function initializeRoutes(?RoutesCollectionBuilder $routesCollectionBuilder): void
+    protected function initializeWorkerDispatcher(): void {
+        $dispatcherClass = $this->config->getConfigFromKey('DISPATCHER');
+
+        if (empty($dispatcherClass)) {
+            return;
+        }
+
+        if (!class_exists($dispatcherClass)) {
+            error_log("[SwooleApp] Класс диспатчера {$dispatcherClass} не найден");
+            return;
+        }
+
+        $dispatcherInstance = new $dispatcherClass();
+
+        if (!$dispatcherInstance instanceof DispatcherInterface) {
+            error_log("[SwooleApp] Класс {$dispatcherClass} должен реализовать DispatcherInterface");
+            return;
+        }
+
+        $this->dispatcher = $dispatcherInstance;
+        error_log("[SwooleApp] Загружен пользовательский диспатчер: {$dispatcherClass}");
+    }
+
+    private function initializeEventHandlers(): void
     {
+        $builder = new SwooleEventHandlersBuilder($this->config);
+        $this->eventHandlersRegistry = $builder->build();
+        $this->eventHandlerExecutor = new EventHandlerExecutor($this, $this->eventHandlersRegistry);
+    }
+
+    public static function getInstance(): ?Application
+    {
+        return self::$instance;
+    }
+
+    public function getEventHandlersRegistry(): SwooleEventHandlersRegistry
+    {
+        return $this->eventHandlersRegistry;
+    }
+
+    /**
+     * Создание и настройка Swoole сервера
+     */
+    public function createServer(?string $host = null, ?int $port = null): Server {
+        $host = $host ?? $this->configBuilder->getServerHost();
+        $port = $port ?? $this->configBuilder->getServerPort();
+        $mode = $this->configBuilder->getServerMode();
+
+        $this->server = new Server($host, $port, $mode);
+
+        $this->server->set($this->configBuilder->buildServerConfig($this->dispatcher));
+
+        $this->registerServerHandlers();
+
+        return $this->server;
+    }
+
+
+    protected function registerServerHandlers(): void {
+        if (!$this->server) {
+            throw new \RuntimeException("Server not created. Call createServer() first.");
+        }
+
+        $app = $this;
+
+        // Обработчик старта воркера с детализацией типа
+        $this->server->on("workerStart", function (Server $server, int $workerId) use ($app) {
+            $context = EventContext::forWorkerStart($server, $workerId);
+            $context->setEventName('workerStart');
+
+            $app->eventHandlerExecutor->executeBeforeHandlers($server, $context);
+
+            // Стандартная логика
+            $isTaskWorker = $server->taskworker;
+            $processType = $isTaskWorker ? 'task_worker' : 'worker';
+
+            echo "Process started: type={$processType}, workerId={$workerId}\n";
+
+            if (!$isTaskWorker) {
+                $app->initCyclicJobsWithWorker($server, $workerId);
+            } else {
+                echo "Process type {$processType} - skipping cyclic jobs.\n";
+            }
+
+            $app->eventHandlerExecutor->executeAfterHandlers($server, $context);
+        });
+
+        // Обработчик остановки воркера
+        $this->server->on("workerStop", function (Server $server, int $workerId) use ($app) {
+            $context = EventContext::forWorkerStop($server, $workerId);
+            $context->setEventName('workerStop');
+
+            $app->eventHandlerExecutor->executeBeforeHandlers($server, $context);
+
+            // Стандартная логика
+            $isTaskWorker = $server->taskworker;
+            $processType = $isTaskWorker ? 'task_worker' : 'worker';
+
+            echo "Process stopping: type={$processType}, workerId={$workerId}\n";
+            $app->shutdownCyclicJobs();
+
+            $app->eventHandlerExecutor->executeAfterHandlers($server, $context);
+        });
+
+        // Обработчик HTTP запросов
+        $this->server->on("request", function ($request, $response) use ($app) {
+            $context = EventContext::forRequest($request, $response);
+            $context->setEventName('request');
+
+            $app->eventHandlerExecutor->executeBeforeHandlers($this->server, $context);
+
+            $app->execute($request, $response, $this->server);
+
+            $app->eventHandlerExecutor->executeAfterHandlers($this->server, $context);
+        });
+
+        // Обработчик задач
+        $this->server->on('task', function (Server $server, $taskId, $reactorId, $data) use ($app) {
+            $context = EventContext::forTask($server, $taskId, $reactorId, $data);
+            $context->setEventName('task');
+
+            $app->eventHandlerExecutor->executeBeforeHandlers($server, $context);
+
+            $result = $app->taskExecute($server, $taskId, $reactorId, $data);
+
+            $context->setTaskResult($result);
+            $app->eventHandlerExecutor->executeAfterHandlers($server, $context);
+
+            return $result;
+        });
+
+        // Обработчик connect
+        $this->server->on("connect", function (Server $server, int $fd, int $reactorId) use ($app) {
+            $context = EventContext::forConnect($server, $fd, $reactorId);
+            $context->setEventName('connect');
+
+            $app->eventHandlerExecutor->executeBeforeHandlers($server, $context);
+        });
+
+        // Обработчик close
+        $this->server->on("close", function (Server $server, int $fd, int $reactorId) use ($app) {
+            $context = EventContext::forClose($server, $fd, $reactorId);
+            $context->setEventName('close');
+
+            $app->eventHandlerExecutor->executeBeforeHandlers($server, $context);
+
+            // Стандартная логика (если нужна)
+
+            $app->eventHandlerExecutor->executeAfterHandlers($server, $context);
+        });
+    }
+
+
+
+    /**
+     * @deprecated 0.3.0 Будет удален в версии 0.4.0
+     */
+    public function initCyclicJobs(Server $server): void {
+        $trace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 2);
+        $caller = $trace[1] ?? null;
+
+        $errorMsg = sprintf(
+            "\n========== ОШИБКА МИГРАЦИИ SwooleApp ==========\n" .
+            "В версии 0.3.0 изменен API циклических задач.\n\n" .
+            "Было (устарело):\n" .
+            "  \$http->on(\"start\", function(\$http) use (\$app) {\n" .
+            "      \$app->initCyclicJobs(\$http);\n" .
+            "  });\n\n" .
+            "Стало (новый API):\n" .
+            "  // Создаем сервер через Application\n" .
+            "  \$http = \$app->createServer('0.0.0.0', 9501);\n" .
+            "  \$http->start();\n\n" .
+            "Все обработчики регистрируются автоматически!\n" .
+            "Место вызова: %s:%d\n" .
+            "============================================\n",
+            $caller['file'] ?? 'unknown',
+            $caller['line'] ?? 0
+        );
+
+        error_log($errorMsg);
+        throw new \RuntimeException($errorMsg);
+    }
+
+    /**
+     * Инициализация циклических задач в воркере
+     */
+    public function initCyclicJobsWithWorker(Server $server, int $workerId): void {
+        // Проверяем, что это HTTP воркер
+        if ($server->taskworker) {
+            error_log(sprintf(
+                "[Worker %d] Попытка запустить циклические задачи в task-воркере - игнорируется",
+                $workerId
+            ));
+            return;
+        }
+
+        $builder = new CyclicJobsBuilder($this->config);
+        $listCyclicJobs = $builder->buildCyclicJobs($this, $server);
+
+        if (empty($listCyclicJobs)) {
+            return;
+        }
+
+        $this->cyclicJobOrchestrator = new CyclicJobOrchestrator(
+            $listCyclicJobs,
+            $this->config,
+            $workerId,
+            $server
+        );
+
+        $this->cyclicJobOrchestrator->start();
+        unset($builder, $listCyclicJobs);
+    }
+
+    /**
+     * Остановка циклических задач
+     */
+    public function shutdownCyclicJobs(): void {
+        if ($this->cyclicJobOrchestrator) {
+            $this->cyclicJobOrchestrator->shutdown();
+        }
+    }
+
+    /**
+     * Инициализация маршрутов
+     */
+    private function initializeRoutes(?RoutesCollectionBuilder $routesCollectionBuilder): void {
         $routeBuilder = $routesCollectionBuilder ?? new RoutesCollectionBuilder($this->config);
         $this->routesCollection = $routeBuilder->buildRoutesCollection();
     }
 
     /**
-     * @return void
+     * Инициализация контейнера состояния
      */
-    private function initializeStateContainer(): void
-    {
+    private function initializeStateContainer(): void {
         $stateContainerInit = $this->config->getConfigFromKey(ApplicationConstants::APP_STATE_CONTAINER_INITIATION_CONFIG_NAME) ?? [];
         if (empty($stateContainerInit)) {
             return;
@@ -107,11 +339,11 @@ class Application
         $this->stateContainer = new StateContainerWrapper($stateContainer);
     }
 
-
-    protected function initGlobalMiddlewares(): void
-    {
+    /**
+     * Инициализация глобальных middleware
+     */
+    protected function initGlobalMiddlewares(): void {
         $globalMiddlewaresConfig = $this->config->getConfigFromKey('globalMiddlewares');
-
         if (is_array($globalMiddlewaresConfig)) {
             foreach ($globalMiddlewaresConfig as $middlewareConfig) {
                 if (is_string($middlewareConfig)) {
@@ -132,49 +364,52 @@ class Application
     /**
      * @return array<array{class: string, options: array<mixed>}>
      */
-    public function getGlobalMiddlewares(): array
-    {
+    public function getGlobalMiddlewares(): array {
         return $this->globalMiddlewares;
     }
 
     /**
-     * @return array<int, array<mixed>>
+     * @return array<mixed>
      */
-    public function getRoutesCollection(): array
-    {
+    public function getRoutesCollection(): array {
         return $this->routesCollection;
     }
 
-    public function execute(\Swoole\Http\Request $request, \Swoole\Http\Response $response, Server $server): void
-    {
+    /**
+     * Выполнение HTTP запроса
+     */
+    public function execute(\Swoole\Http\Request $request, \Swoole\Http\Response $response, Server $server): void {
         $Route_builder = new RoutesCollectionBuilder($this->config);
         $itemRouteCollection = $Route_builder->searchInRoute($request, $this->routesCollection);
+
         if (empty($itemRouteCollection)) {
             $controller = (new NotFoundControllerBuilder($request, $response, $this->config))->build();
         } else {
             $controller = $Route_builder->getController($itemRouteCollection, $request, $response);
         }
+
         $controller->setApplication($this, $server);
-
         $response = $controller->executeWithMiddlewares();
-
         unset($controller);
     }
 
-    public function getConfig(): ConfigWrapper
-    {
+    /**
+     * Получение конфигурации
+     */
+    public function getConfig(): ConfigWrapper {
         return $this->config;
     }
 
-    public function taskExecute(\Swoole\Http\Server $server, int $taskId, int $reactorId, TaskDataInterface $data): TaskResulted
-    {
+    /**
+     * Выполнение задачи
+     */
+    public function taskExecute(\Swoole\Http\Server $server, int $taskId, int $reactorId, TaskDataInterface $data): TaskResulted {
         try {
             if (empty($data->getTaskClassName())) {
                 throw new \InvalidArgumentException('Task class name is empty');
             }
 
             $TaskExecutorClassName = $data->getTaskClassName();
-
             if (!class_exists($TaskExecutorClassName)) {
                 throw new \RuntimeException("Task executor class {$TaskExecutorClassName} not found");
             }
@@ -184,20 +419,16 @@ class Application
             }
 
             $taskExecutor = new $TaskExecutorClassName($server, $taskId, $reactorId, $data, $this);
-
             if (!$taskExecutor instanceof TaskExecutorInterface) {
                 throw new \RuntimeException("Invalid task executor instance");
             }
 
             return $taskExecutor->execute();
-
         } catch (\Throwable $e) {
-            // Логирование ошибки (можно добавить зависимость от PSR-3 LoggerInterface)
             if ($this->config->getConfigFromKey('APP_DEBUG')) {
                 error_log("Task execution failed: " . $e->getMessage());
             }
 
-            // Возвращаем подробную информацию об ошибке в debug режиме
             $errorDetails = $this->config->getConfigFromKey('APP_DEBUG')
                 ? ['message' => $e->getMessage(), 'trace' => $e->getTraceAsString()]
                 : 'Task execution failed';
@@ -206,22 +437,10 @@ class Application
         }
     }
 
-    public function initCyclicJobs(Server $server): void
-    {
-        $builder = new CyclicJobsBuilder($this->config);
-        $listCyclicJobs = $builder->buildCyclicJobs($this, $server);
-        $cyclicJobRunner = new CyclicJobRunner($listCyclicJobs);
-        $cyclicJobRunner->start();
-        unset($builder);
-        unset($listCyclicJobs);
-    }
-
     /**
-     * @return StateContainerWrapper
+     * Получение контейнера состояния
      */
-    public function getStateContainer(): StateContainerWrapper
-    {
+    public function getStateContainer(): StateContainerWrapper {
         return $this->stateContainer;
     }
-
 }
